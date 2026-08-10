@@ -31,12 +31,16 @@ multiplexed over that single connection (like ngrok, frp, or rathole).
   nothing to copy by hand.
 - The client never needs inbound ports open on your home router/firewall —
   only an outbound connection to the VPS.
-- Tunnel definitions (which local port maps to which public VPS port) are
-  configured **server-side** (via the web UI or the CLI) and pushed to the
-  client automatically after it connects.
+- Tunnel definitions (which local port maps to which public VPS port,
+  TCP or UDP) are configured **server-side** (via the web UI or the CLI)
+  and pushed to the client automatically after it connects.
 - New/removed tunnels take effect on the running server **without a
   restart**: a background reconciliation loop opens and closes public
   listeners dynamically.
+- Deleting a machine tells it to uninstall itself — live, if it's currently
+  connected; otherwise the next time it tries to reconnect, since its
+  token is revoked immediately. Either way it removes its own systemd
+  service, config, and binary rather than being left behind as an orphan.
 - The server generates its own self-signed CA on first run; the client pins
   its SHA-256 fingerprint instead of relying on a public CA, so there's no
   extra TLS setup required.
@@ -135,6 +139,10 @@ to build install links — set this to your VPS's public IP/domain),
 `--allowed-origin` (repeatable; browser origins allowed to call the API with
 credentials — add your web UI's origin if it's not `localhost:3000`).
 
+`tunnel add` takes `--protocol tcp` (default) or `--protocol udp` — pick UDP
+for things like game servers or WireGuard that don't use TCP. Both are
+selectable the same way in the web UI's "Add tunnel" form.
+
 ## Building from source
 
 Requires Go 1.25+ (`scripts/install-go.sh` installs it if missing) and
@@ -212,11 +220,13 @@ deploy/systemd/          manual-setup unit file templates
 
 ## Roadmap
 
-Done: Go tunnel core (server + client, TCP tunnels, dynamic reconciliation,
-traffic accounting), the management API, the one-command "Add machine"
-installer, and the Next.js/Tailwind web UI (clients, tunnels, live +
-historical bandwidth, forced first-login credential change).
+Done: Go tunnel core (server + client, TCP and UDP tunnels, dynamic
+reconciliation, real-time traffic accounting, machines auto-uninstall
+themselves when deleted), the management API, the one-command "Add
+machine" installer, and the Next.js/Tailwind web UI (clients, tunnels,
+live + historical bandwidth, forced first-login credential change).
 
 Ideas for later: traffic quotas/limits with automatic pause, alert delivery
-beyond the in-UI dashboard (e.g. webhooks), UDP/HTTP tunnels, multi-user
+beyond the in-UI dashboard (e.g. webhooks), Layer-7 HTTP/HTTPS tunnels
+(domain-based routing), multi-user
 accounts.

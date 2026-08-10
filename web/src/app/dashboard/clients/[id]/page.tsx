@@ -134,6 +134,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-foreground-muted">
                 <th className="px-4 py-3 font-medium">Name</th>
+                <th className="px-4 py-3 font-medium">Protocol</th>
                 <th className="px-4 py-3 font-medium">Local target</th>
                 <th className="px-4 py-3 font-medium">Public port</th>
                 <th className="px-4 py-3 font-medium">Live rate</th>
@@ -154,6 +155,9 @@ function ClientDetail({ clientId }: { clientId: string }) {
                     }`}
                   >
                     <td className="px-4 py-3 font-medium">{t.name}</td>
+                    <td className="px-4 py-3 text-foreground-secondary uppercase text-xs">
+                      {t.protocol}
+                    </td>
                     <td className="px-4 py-3 text-foreground-secondary">
                       {t.local_host}:{t.local_port}
                     </td>

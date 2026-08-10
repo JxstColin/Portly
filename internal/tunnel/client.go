@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,11 +21,23 @@ const (
 	maxBackoff  = 30 * time.Second
 )
 
+// ErrUninstalled is returned by Run when the server told this client its
+// machine was deleted in the UI. OnUninstall (if set) has already been
+// called by the time this is returned; the caller should exit rather than
+// let Run retry — there's nothing left to reconnect to.
+var ErrUninstalled = errors.New("client was uninstalled")
+
 type Client struct {
 	ServerAddr    string
 	Token         string
 	CAFingerprint string
 	Log           *slog.Logger
+
+	// OnUninstall, if set, is called exactly once when the server instructs
+	// this client to remove itself (its machine was deleted in the UI). It
+	// should tear down any local service installation (systemd unit,
+	// config file, binary) — Run stops retrying afterwards regardless.
+	OnUninstall func()
 
 	mu      sync.RWMutex
 	targets map[string]protocol.TunnelSpec // tunnel ID -> current spec
@@ -43,8 +56,9 @@ func NewClient(serverAddr, token, caFingerprint string, logger *slog.Logger) *Cl
 	}
 }
 
-// Run connects to the server and services tunnels until ctx is cancelled,
-// automatically reconnecting with backoff on any failure.
+// Run connects to the server and services tunnels until ctx is cancelled or
+// the server instructs this client to uninstall itself, automatically
+// reconnecting with backoff on any other failure.
 func (c *Client) Run(ctx context.Context) error {
 	backoff := minBackoff
 	for {
@@ -55,6 +69,9 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		err := c.runOnce(ctx)
+		if errors.Is(err, ErrUninstalled) {
+			return err
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -89,6 +106,10 @@ func (c *Client) runOnce(ctx context.Context) error {
 		return fmt.Errorf("read auth response: %w", err)
 	}
 	if !resp.OK {
+		if resp.Uninstall {
+			c.runUninstall()
+			return ErrUninstalled
+		}
 		return fmt.Errorf("auth rejected: %s", resp.Error)
 	}
 	conn.SetDeadline(time.Time{})
@@ -127,11 +148,23 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 }
 
+func (c *Client) runUninstall() {
+	c.Log.Warn("this machine was removed in the Portly UI — uninstalling")
+	if c.OnUninstall != nil {
+		c.OnUninstall()
+	}
+}
+
 func (c *Client) readControlStream(stream net.Conn) error {
 	for {
 		var push protocol.TunnelConfigPush
 		if err := protocol.ReadFrame(stream, &push); err != nil {
 			return fmt.Errorf("control stream closed: %w", err)
+		}
+
+		if push.Uninstall {
+			c.runUninstall()
+			return ErrUninstalled
 		}
 
 		next := make(map[string]protocol.TunnelSpec, len(push.Tunnels))
@@ -158,11 +191,10 @@ func (c *Client) acceptDataStreams(session *yamux.Session) error {
 }
 
 func (c *Client) handleDataStream(stream net.Conn) {
-	defer stream.Close()
-
 	var hdr protocol.StreamHeader
 	if err := protocol.ReadFrame(stream, &hdr); err != nil {
 		c.Log.Warn("read stream header failed", "err", err)
+		stream.Close()
 		return
 	}
 
@@ -171,8 +203,16 @@ func (c *Client) handleDataStream(stream net.Conn) {
 	c.mu.RUnlock()
 	if !ok {
 		c.Log.Warn("unknown tunnel id in stream header", "tunnel_id", hdr.TunnelID)
+		stream.Close()
 		return
 	}
+
+	if spec.Protocol == protocol.ProtocolUDP {
+		c.handleUDPStream(stream, spec) // owns closing the stream itself
+		return
+	}
+
+	defer stream.Close()
 
 	local := net.JoinHostPort(spec.LocalHost, fmt.Sprintf("%d", spec.LocalPort))
 	localConn, err := net.DialTimeout("tcp", local, dialTimeout)
@@ -182,5 +222,5 @@ func (c *Client) handleDataStream(stream net.Conn) {
 	}
 	defer localConn.Close()
 
-	pipe(localConn, stream)
+	pipe(localConn, stream, new(int64), new(int64))
 }

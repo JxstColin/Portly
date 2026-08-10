@@ -196,9 +196,40 @@ func (d *DB) ListClients() ([]Client, error) {
 	return out, rows.Err()
 }
 
+// DeleteClient removes a client (cascading its tunnels) and revokes its
+// token, so that if the machine is offline right now and reconnects later,
+// the server can tell it to uninstall itself instead of just rejecting it.
 func (d *DB) DeleteClient(id string) error {
-	_, err := d.sql.Exec(`DELETE FROM clients WHERE id = ?`, id)
-	return err
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var tokenHash string
+	err = tx.QueryRow(`SELECT token_hash FROM clients WHERE id = ?`, id).Scan(&tokenHash)
+	if err != nil {
+		return fmt.Errorf("find client: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM clients WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at) VALUES (?, ?)`,
+		tokenHash, time.Now().Unix(),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// IsTokenRevoked reports whether a token belonged to a client that has
+// since been deleted.
+func (d *DB) IsTokenRevoked(tokenHash string) bool {
+	var count int
+	err := d.sql.QueryRow(`SELECT COUNT(*) FROM revoked_tokens WHERE token_hash = ?`, tokenHash).Scan(&count)
+	return err == nil && count > 0
 }
 
 func (d *DB) UpdateClientLastSeen(id string) error {
@@ -223,7 +254,10 @@ type Tunnel struct {
 	CreatedAt         time.Time
 }
 
-func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPort int) (Tunnel, error) {
+func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPort int, proto string) (Tunnel, error) {
+	if proto == "" {
+		proto = "tcp"
+	}
 	t := Tunnel{
 		ID:         uuid.NewString(),
 		ClientID:   clientID,
@@ -231,7 +265,7 @@ func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPor
 		LocalHost:  localHost,
 		LocalPort:  localPort,
 		PublicPort: publicPort,
-		Protocol:   "tcp",
+		Protocol:   proto,
 		Enabled:    true,
 		CreatedAt:  time.Now(),
 	}

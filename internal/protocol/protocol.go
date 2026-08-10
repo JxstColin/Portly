@@ -26,14 +26,19 @@ type AuthResponse struct {
 	Error    string `json:"error,omitempty"`
 	ClientID string `json:"client_id,omitempty"`
 	Name     string `json:"name,omitempty"`
+	// Uninstall is set when OK is false because this client's token was
+	// revoked (its machine was deleted in the UI) rather than simply being
+	// invalid — the client should clean itself up instead of retrying.
+	Uninstall bool `json:"uninstall,omitempty"`
 }
 
-// Protocol is the tunnel's transport protocol. Only TCP is supported today;
-// the field exists so the wire format doesn't need to change when UDP/HTTP
-// tunnels are added later.
+// Protocol is the tunnel's transport protocol.
 type Protocol string
 
-const ProtocolTCP Protocol = "tcp"
+const (
+	ProtocolTCP Protocol = "tcp"
+	ProtocolUDP Protocol = "udp"
+)
 
 // TunnelSpec describes one tunnel as configured by the admin. It is pushed
 // from server to client over the control stream whenever the client's
@@ -52,14 +57,28 @@ type TunnelSpec struct {
 // It always carries the client's full current tunnel set.
 type TunnelConfigPush struct {
 	Tunnels []TunnelSpec `json:"tunnels"`
+	// Uninstall tells an already-connected client that its machine was just
+	// deleted in the UI — it should clean itself up and disconnect for good.
+	Uninstall bool `json:"uninstall,omitempty"`
 }
 
 // StreamHeader is written as the first frame on every yamux data stream the
 // server opens for a proxied connection, so the client knows which local
-// target to dial. After this frame, the stream carries raw proxied bytes in
-// both directions.
+// target and protocol to use. For TCP tunnels, the stream carries raw
+// proxied bytes in both directions after this frame. For UDP tunnels, the
+// stream instead stays open for the tunnel's lifetime and carries a
+// sequence of UDPPacket frames (see below), since a single UDP "tunnel" can
+// carry many independent public-side senders.
 type StreamHeader struct {
 	TunnelID string `json:"tunnel_id"`
+}
+
+// UDPPacket carries one UDP datagram plus the public-side address it came
+// from (server→client) or should be sent back to (client→server), so a
+// single yamux stream can multiplex every public sender for a UDP tunnel.
+type UDPPacket struct {
+	SourceAddr string `json:"src"`
+	Data       []byte `json:"data"`
 }
 
 // WriteFrame writes a length-prefixed JSON-encoded message to w.
