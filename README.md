@@ -49,9 +49,13 @@ multiplexed over that single connection (like ngrok, frp, or rathole).
 ### 1. Set up the VPS — one command
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/quickstart-vps.sh \
+curl -fsSL "https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/quickstart-vps.sh?$(date +%s)" \
   | sudo bash -s -- --host YOUR_VPS_IP_OR_DOMAIN
 ```
+
+(The `?$(date +%s)` busts GitHub's raw-content CDN cache, which otherwise
+can serve a stale copy of the script for a few minutes after a fix is
+pushed — always include it rather than a bare URL.)
 
 This installs Go if needed, builds `portly-server` (with prebuilt client
 binaries embedded for the installer below), installs it as a systemd
@@ -61,7 +65,7 @@ default login. **Any cloud firewall/security group in front of the VPS
 `ufw` alone doesn't cover that.
 
 Already have the repo cloned? Run `sudo ./scripts/quickstart-vps.sh --host
-YOUR_VPS_IP_OR_DOMAIN` from its root instead.
+YOUR_VPS_IP_OR_DOMAIN` from its root instead — no CDN involved either way.
 
 ### 2. Open the web UI
 
