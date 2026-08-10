@@ -1,0 +1,21 @@
+[Unit]
+Description=Portly reverse-tunnel server (control-plane + tunnel listeners)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=portly
+Group=portly
+ExecStart=/usr/local/bin/portly-server --data-dir /var/lib/portly --control-addr :7000 --advertise-host YOUR_VPS_HOST run
+Restart=on-failure
+RestartSec=2
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/portly
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
