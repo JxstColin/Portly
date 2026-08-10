@@ -32,9 +32,17 @@ done
 [ -n "$HOST" ] || die "missing required --host YOUR_VPS_IP_OR_DOMAIN (used for the TLS cert and install links)"
 
 command -v curl >/dev/null 2>&1 || die "curl is required but not installed"
-if ! command -v git >/dev/null 2>&1; then
-	log "installing git..."
-	apt-get update -qq && apt-get install -y -qq git
+
+MISSING_PKGS=""
+command -v git >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS git"
+command -v make >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS make"
+if [ -n "$MISSING_PKGS" ]; then
+	if command -v apt-get >/dev/null 2>&1; then
+		log "installing missing packages:$MISSING_PKGS..."
+		apt-get update -qq && apt-get install -y -qq $MISSING_PKGS
+	else
+		die "missing required command(s):$MISSING_PKGS (install manually — this script only automates apt-based distros)"
+	fi
 fi
 
 # Reuse an existing checkout if we're already inside one (e.g. the user
