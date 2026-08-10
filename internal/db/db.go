@@ -69,6 +69,32 @@ func (d *DB) ensureAdminUser() error {
 	return err
 }
 
+// --- Admin user (single-admin) ---
+
+type AdminUser struct {
+	ID                 string
+	Username           string
+	PasswordHash       string
+	MustChangePassword bool
+}
+
+func (d *DB) GetAdminUser() (AdminUser, error) {
+	var a AdminUser
+	var mustChange int
+	err := d.sql.QueryRow(`SELECT id, username, password_hash, must_change_password FROM admin_users LIMIT 1`).
+		Scan(&a.ID, &a.Username, &a.PasswordHash, &mustChange)
+	a.MustChangePassword = mustChange == 1
+	return a, err
+}
+
+func (d *DB) UpdateAdminCredentials(id, username, passwordHash string, mustChangePassword bool) error {
+	_, err := d.sql.Exec(
+		`UPDATE admin_users SET username = ?, password_hash = ?, must_change_password = ? WHERE id = ?`,
+		username, passwordHash, boolToInt(mustChangePassword), id,
+	)
+	return err
+}
+
 // --- Clients ---
 
 type Client struct {
@@ -295,6 +321,107 @@ func (d *DB) AddTunnelTraffic(tunnelID string, bytesIn, bytesOut int64) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// --- Enrollment codes ---
+
+const enrollCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no ambiguous chars
+
+// CreateEnrollmentCode generates a short, human-typeable one-time code for
+// the given client that the 'portly-client enroll' command can exchange for
+// its real token. Only the code's hash is persisted; the plaintext token is
+// held in this row only until exchange (or expiry), then deleted.
+func (d *DB) CreateEnrollmentCode(clientID, token string, ttl time.Duration) (string, error) {
+	code, err := randomCode(10)
+	if err != nil {
+		return "", err
+	}
+	hash := HashToken(code)
+	now := time.Now()
+	_, err = d.sql.Exec(
+		`INSERT INTO enrollment_codes (code_hash, client_id, token, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		hash, clientID, token, now.Unix(), now.Add(ttl).Unix(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("insert enrollment code: %w", err)
+	}
+	return code, nil
+}
+
+// ExchangeEnrollmentCode atomically validates and consumes a one-time
+// enrollment code, returning the client it was issued for and its plaintext
+// token. Returns an error if the code is unknown, expired, or already used
+// (the row is deleted on first successful exchange, making reuse impossible).
+func (d *DB) ExchangeEnrollmentCode(code string) (Client, string, error) {
+	hash := HashToken(code)
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return Client{}, "", err
+	}
+	defer tx.Rollback()
+
+	var clientID, token string
+	var expiresAt int64
+	err = tx.QueryRow(
+		`SELECT client_id, token, expires_at FROM enrollment_codes WHERE code_hash = ?`, hash,
+	).Scan(&clientID, &token, &expiresAt)
+	if err != nil {
+		return Client{}, "", fmt.Errorf("invalid or already-used enrollment code")
+	}
+	if time.Now().Unix() > expiresAt {
+		return Client{}, "", fmt.Errorf("enrollment code expired")
+	}
+
+	if _, err := tx.Exec(`DELETE FROM enrollment_codes WHERE code_hash = ?`, hash); err != nil {
+		return Client{}, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return Client{}, "", err
+	}
+
+	client, err := d.GetClientByID(clientID)
+	return client, token, err
+}
+
+func randomCode(n int) (string, error) {
+	b := make([]byte, n)
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	for i, v := range raw {
+		b[i] = enrollCodeAlphabet[int(v)%len(enrollCodeAlphabet)]
+	}
+	return string(b), nil
+}
+
+// --- Traffic samples ---
+
+type TrafficSample struct {
+	TS       int64 `json:"ts"`
+	BytesIn  int64 `json:"bytes_in"`
+	BytesOut int64 `json:"bytes_out"`
+}
+
+func (d *DB) ListTrafficSamples(tunnelID string, since int64) ([]TrafficSample, error) {
+	rows, err := d.sql.Query(
+		`SELECT ts, bytes_in, bytes_out FROM traffic_samples WHERE tunnel_id = ? AND ts >= ? ORDER BY ts`,
+		tunnelID, since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TrafficSample
+	for rows.Next() {
+		var s TrafficSample
+		if err := rows.Scan(&s.TS, &s.BytesIn, &s.BytesOut); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func boolToInt(b bool) int {
