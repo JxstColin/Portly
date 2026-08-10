@@ -1,0 +1,295 @@
+// Command portly-server runs Portly's control-plane / data-plane daemon and
+// provides CLI bootstrap commands (client/tunnel management) for use before
+// the web UI exists.
+package main
+
+import (
+	"crypto/tls"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+
+	"github.com/jxstcolin/portly/internal/db"
+	"github.com/jxstcolin/portly/internal/tlsutil"
+	"github.com/jxstcolin/portly/internal/tunnel"
+)
+
+var (
+	dataDir       string
+	controlAddr   string
+	advertiseHost []string
+)
+
+func main() {
+	root := &cobra.Command{
+		Use:   "portly-server",
+		Short: "Portly reverse-tunnel server",
+	}
+	root.PersistentFlags().StringVar(&dataDir, "data-dir", "/var/lib/portly", "directory for the SQLite DB and TLS certs")
+	root.PersistentFlags().StringVar(&controlAddr, "control-addr", ":7000", "address the control-plane listens on")
+	root.PersistentFlags().StringSliceVar(&advertiseHost, "advertise-host", []string{"localhost", "127.0.0.1"}, "hostnames/IPs to embed in the server TLS certificate (e.g. your VPS public IP or domain)")
+
+	root.AddCommand(runCmd(), clientCmd(), tunnelCmd())
+
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func openDB() (*db.DB, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	return db.Open(filepath.Join(dataDir, "portly.db"))
+}
+
+func runCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "run",
+		Short: "Start the Portly server (control-plane + tunnel listeners)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+
+			cert, fingerprint, err := tlsutil.EnsureServerCert(dataDir, advertiseHost)
+			if err != nil {
+				return fmt.Errorf("ensure server cert: %w", err)
+			}
+			logger.Info("server certificate ready", "sha256_fingerprint", fingerprint)
+
+			tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+
+			srv := tunnel.NewServer(database, tlsConfig, controlAddr, logger)
+			return srv.Run()
+		},
+	}
+}
+
+func clientCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "client", Short: "Manage tunnel clients"}
+	cmd.AddCommand(clientAddCmd(), clientListCmd(), clientRmCmd())
+	return cmd
+}
+
+func clientAddCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add [name]",
+		Short: "Register a new client and print its connection token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+
+			_, fingerprint, err := tlsutil.EnsureServerCert(dataDir, advertiseHost)
+			if err != nil {
+				return err
+			}
+
+			client, token, err := database.CreateClient(args[0])
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Client %q created (id=%s)\n\n", client.Name, client.ID)
+			fmt.Println("portly-client.yaml:")
+			fmt.Printf("  server_addr: \"%s\"\n", firstNonEmpty(advertiseHost, "YOUR_VPS_HOST")+controlAddrPortSuffix())
+			fmt.Printf("  token: \"%s\"\n", token)
+			fmt.Printf("  ca_fingerprint: \"%s\"\n", fingerprint)
+			fmt.Println("\n(Token is shown once — store it now.)")
+			return nil
+		},
+	}
+}
+
+func clientListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List registered clients",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+
+			clients, err := database.ListClients()
+			if err != nil {
+				return err
+			}
+			for _, c := range clients {
+				lastSeen := "never"
+				if c.LastSeen != nil {
+					lastSeen = c.LastSeen.Format("2006-01-02 15:04:05")
+				}
+				fmt.Printf("%s\t%s\tlast_seen=%s\n", c.ID, c.Name, lastSeen)
+			}
+			return nil
+		},
+	}
+}
+
+func clientRmCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rm [id]",
+		Short: "Delete a client (and its tunnels)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+			return database.DeleteClient(args[0])
+		},
+	}
+}
+
+func tunnelCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "tunnel", Short: "Manage tunnels"}
+	cmd.AddCommand(tunnelAddCmd(), tunnelListCmd(), tunnelRmCmd())
+	return cmd
+}
+
+func tunnelAddCmd() *cobra.Command {
+	var clientRef, name, localHost string
+	var localPort, publicPort int
+
+	c := &cobra.Command{
+		Use:   "add",
+		Short: "Create a tunnel: local_host:local_port on the client -> public_port on the VPS",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+
+			client, err := resolveClient(database, clientRef)
+			if err != nil {
+				return err
+			}
+
+			if name == "" {
+				name = fmt.Sprintf("%s:%d->%d", localHost, localPort, publicPort)
+			}
+
+			t, err := database.CreateTunnel(client.ID, name, localHost, localPort, publicPort)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Tunnel %q created (id=%s): %s:%d -> public port %d (client %s)\n",
+				t.Name, t.ID, t.LocalHost, t.LocalPort, t.PublicPort, client.Name)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&clientRef, "client", "", "client ID or name (required)")
+	c.Flags().StringVar(&name, "name", "", "tunnel name (default: auto-generated)")
+	c.Flags().StringVar(&localHost, "local-host", "127.0.0.1", "host to dial on the client machine")
+	c.Flags().IntVar(&localPort, "local-port", 0, "port to dial on the client machine (required)")
+	c.Flags().IntVar(&publicPort, "public-port", 0, "public port to open on the VPS (required)")
+	c.MarkFlagRequired("client")
+	c.MarkFlagRequired("local-port")
+	c.MarkFlagRequired("public-port")
+	return c
+}
+
+func tunnelListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List tunnels",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+
+			tunnels, err := database.ListAllTunnels()
+			if err != nil {
+				return err
+			}
+			for _, t := range tunnels {
+				status := "enabled"
+				if !t.Enabled {
+					status = "disabled"
+				}
+				fmt.Printf("%s\t%s\t%s:%d -> :%d\tclient=%s\t%s\n",
+					t.ID, t.Name, t.LocalHost, t.LocalPort, t.PublicPort, t.ClientID, status)
+			}
+			return nil
+		},
+	}
+}
+
+func tunnelRmCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rm [id]",
+		Short: "Delete a tunnel",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			database, err := openDB()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+			return database.DeleteTunnel(args[0])
+		},
+	}
+}
+
+func resolveClient(database *db.DB, ref string) (db.Client, error) {
+	if c, err := database.GetClientByID(ref); err == nil {
+		return c, nil
+	}
+	clients, err := database.ListClients()
+	if err != nil {
+		return db.Client{}, err
+	}
+	for _, c := range clients {
+		if c.Name == ref {
+			return c, nil
+		}
+	}
+	return db.Client{}, fmt.Errorf("no client found matching %q", ref)
+}
+
+func firstNonEmpty(hosts []string, fallback string) string {
+	for _, h := range hosts {
+		if h != "" && h != "localhost" && h != "127.0.0.1" {
+			return h
+		}
+	}
+	if len(hosts) > 0 {
+		return hosts[0]
+	}
+	return fallback
+}
+
+func controlAddrPortSuffix() string {
+	_, port, err := splitHostPort(controlAddr)
+	if err != nil {
+		return controlAddr
+	}
+	return ":" + port
+}
+
+func splitHostPort(addr string) (host, port string, err error) {
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			return addr[:i], addr[i+1:], nil
+		}
+	}
+	return "", "", fmt.Errorf("no port in address %q", addr)
+}
