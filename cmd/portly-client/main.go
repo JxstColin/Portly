@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -46,12 +47,17 @@ func runCmd(configPath *string) *cobra.Command {
 
 			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 			c := tunnel.NewClient(cfg.ServerAddr, cfg.Token, cfg.CAFingerprint, logger)
+			c.OnUninstall = func() { performSelfUninstall(*configPath, logger) }
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			err = c.Run(ctx)
 			if err == context.Canceled {
+				return nil
+			}
+			if errors.Is(err, tunnel.ErrUninstalled) {
+				fmt.Println("Uninstalled — exiting.")
 				return nil
 			}
 			return err

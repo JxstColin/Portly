@@ -192,7 +192,7 @@ func tunnelCmd() *cobra.Command {
 }
 
 func tunnelAddCmd() *cobra.Command {
-	var clientRef, name, localHost string
+	var clientRef, name, localHost, proto string
 	var localPort, publicPort int
 
 	c := &cobra.Command{
@@ -214,12 +214,16 @@ func tunnelAddCmd() *cobra.Command {
 				name = fmt.Sprintf("%s:%d->%d", localHost, localPort, publicPort)
 			}
 
-			t, err := database.CreateTunnel(client.ID, name, localHost, localPort, publicPort)
+			if proto != "tcp" && proto != "udp" {
+				return fmt.Errorf("--protocol must be 'tcp' or 'udp', got %q", proto)
+			}
+
+			t, err := database.CreateTunnel(client.ID, name, localHost, localPort, publicPort, proto)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Tunnel %q created (id=%s): %s:%d -> public port %d (client %s)\n",
-				t.Name, t.ID, t.LocalHost, t.LocalPort, t.PublicPort, client.Name)
+			fmt.Printf("Tunnel %q created (id=%s): %s/%s:%d -> public port %d (client %s)\n",
+				t.Name, t.ID, t.Protocol, t.LocalHost, t.LocalPort, t.PublicPort, client.Name)
 			return nil
 		},
 	}
@@ -228,6 +232,7 @@ func tunnelAddCmd() *cobra.Command {
 	c.Flags().StringVar(&localHost, "local-host", "127.0.0.1", "host to dial on the client machine")
 	c.Flags().IntVar(&localPort, "local-port", 0, "port to dial on the client machine (required)")
 	c.Flags().IntVar(&publicPort, "public-port", 0, "public port to open on the VPS (required)")
+	c.Flags().StringVar(&proto, "protocol", "tcp", "tunnel protocol: tcp or udp")
 	c.MarkFlagRequired("client")
 	c.MarkFlagRequired("local-port")
 	c.MarkFlagRequired("public-port")
@@ -254,8 +259,8 @@ func tunnelListCmd() *cobra.Command {
 				if !t.Enabled {
 					status = "disabled"
 				}
-				fmt.Printf("%s\t%s\t%s:%d -> :%d\tclient=%s\t%s\n",
-					t.ID, t.Name, t.LocalHost, t.LocalPort, t.PublicPort, t.ClientID, status)
+				fmt.Printf("%s\t%s\t%s/%s:%d -> :%d\tclient=%s\t%s\n",
+					t.ID, t.Name, t.Protocol, t.LocalHost, t.LocalPort, t.PublicPort, t.ClientID, status)
 			}
 			return nil
 		},

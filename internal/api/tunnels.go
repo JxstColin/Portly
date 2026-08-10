@@ -11,6 +11,7 @@ type tunnelView struct {
 	ID                string `json:"id"`
 	ClientID          string `json:"client_id"`
 	Name              string `json:"name"`
+	Protocol          string `json:"protocol"`
 	LocalHost         string `json:"local_host"`
 	LocalPort         int    `json:"local_port"`
 	PublicPort        int    `json:"public_port"`
@@ -26,6 +27,7 @@ func toTunnelView(t db.Tunnel) tunnelView {
 		ID:                t.ID,
 		ClientID:          t.ClientID,
 		Name:              t.Name,
+		Protocol:          t.Protocol,
 		LocalHost:         t.LocalHost,
 		LocalPort:         t.LocalPort,
 		PublicPort:        t.PublicPort,
@@ -62,6 +64,7 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 type createTunnelRequest struct {
 	ClientID   string `json:"client_id"`
 	Name       string `json:"name"`
+	Protocol   string `json:"protocol"`
 	LocalHost  string `json:"local_host"`
 	LocalPort  int    `json:"local_port"`
 	PublicPort int    `json:"public_port"`
@@ -79,6 +82,9 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		req.LocalHost = "127.0.0.1"
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	if req.Protocol == "" {
+		req.Protocol = "tcp"
+	}
 
 	if req.ClientID == "" {
 		writeError(w, http.StatusBadRequest, "client_id is required")
@@ -86,6 +92,10 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.DB.GetClientByID(req.ClientID); err != nil {
 		writeError(w, http.StatusNotFound, "client not found")
+		return
+	}
+	if req.Protocol != "tcp" && req.Protocol != "udp" {
+		writeError(w, http.StatusBadRequest, "protocol must be 'tcp' or 'udp'")
 		return
 	}
 	if req.LocalPort < 1 || req.LocalPort > 65535 {
@@ -100,7 +110,7 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		req.Name = req.LocalHost
 	}
 
-	t, err := s.DB.CreateTunnel(req.ClientID, req.Name, req.LocalHost, req.LocalPort, req.PublicPort)
+	t, err := s.DB.CreateTunnel(req.ClientID, req.Name, req.LocalHost, req.LocalPort, req.PublicPort, req.Protocol)
 	if err != nil {
 		writeError(w, http.StatusConflict, "public_port is already in use by another tunnel")
 		return
