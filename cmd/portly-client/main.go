@@ -26,7 +26,7 @@ func main() {
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", "portly-client.yaml", "path to client config file")
 
-	root.AddCommand(runCmd(&configPath), initCmd(&configPath))
+	root.AddCommand(runCmd(&configPath), initCmd(&configPath), enrollCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

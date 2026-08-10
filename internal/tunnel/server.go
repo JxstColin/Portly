@@ -158,6 +158,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.mu.Unlock()
 }
 
+// ConnectedClientIDs returns the set of client IDs with a live control-plane
+// session right now, for the API/UI to show online/offline status.
+func (s *Server) ConnectedClientIDs() map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]bool, len(s.sessions))
+	for id := range s.sessions {
+		out[id] = true
+	}
+	return out
+}
+
 // pushTunnelConfig sends the client's current tunnel set over its control
 // stream, if it changed since the last push.
 func (s *Server) pushTunnelConfig(cs *clientSession) {

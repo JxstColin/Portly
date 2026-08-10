@@ -9,18 +9,22 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
+	"github.com/jxstcolin/portly/internal/api"
 	"github.com/jxstcolin/portly/internal/db"
 	"github.com/jxstcolin/portly/internal/tlsutil"
 	"github.com/jxstcolin/portly/internal/tunnel"
 )
 
 var (
-	dataDir       string
-	controlAddr   string
-	advertiseHost []string
+	dataDir        string
+	controlAddr    string
+	apiAddr        string
+	advertiseHost  []string
+	allowedOrigins []string
 )
 
 func main() {
@@ -29,8 +33,10 @@ func main() {
 		Short: "Portly reverse-tunnel server",
 	}
 	root.PersistentFlags().StringVar(&dataDir, "data-dir", "/var/lib/portly", "directory for the SQLite DB and TLS certs")
-	root.PersistentFlags().StringVar(&controlAddr, "control-addr", ":7000", "address the control-plane listens on")
+	root.PersistentFlags().StringVar(&controlAddr, "control-addr", ":7000", "address the control-plane (tunnel clients) listens on")
+	root.PersistentFlags().StringVar(&apiAddr, "api-addr", ":8080", "address the management API (used by the web UI and 'Add machine' installer) listens on")
 	root.PersistentFlags().StringSliceVar(&advertiseHost, "advertise-host", []string{"localhost", "127.0.0.1"}, "hostnames/IPs to embed in the server TLS certificate (e.g. your VPS public IP or domain)")
+	root.PersistentFlags().StringSliceVar(&allowedOrigins, "allowed-origin", []string{"http://localhost:3000"}, "origins allowed to call the API with credentials (add your web UI's origin)")
 
 	root.AddCommand(runCmd(), clientCmd(), tunnelCmd())
 
@@ -69,6 +75,29 @@ func runCmd() *cobra.Command {
 			tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
 
 			srv := tunnel.NewServer(database, tlsConfig, controlAddr, logger)
+
+			clientBins, err := api.LoadEmbeddedClientBinaries()
+			if err != nil {
+				logger.Warn("could not load embedded client binaries, 'Add machine' installer will 404", "err", err)
+				clientBins = map[string][]byte{}
+			} else if len(clientBins) == 0 {
+				logger.Warn("no embedded client binaries found — run 'make build-clientbins' before building, or use 'portly-client init' manually")
+			}
+
+			apiSrv := api.NewServer(database, srv, logger)
+			apiSrv.AdvertiseHost = firstNonEmpty(advertiseHost, "localhost")
+			apiSrv.ControlPort = mustPort(controlAddr)
+			apiSrv.APIPort = mustPort(apiAddr)
+			apiSrv.CAFingerprint = fingerprint
+			apiSrv.AllowedOrigins = allowedOrigins
+			apiSrv.ClientBinaries = clientBins
+
+			go func() {
+				if err := apiSrv.Run(apiAddr); err != nil {
+					logger.Error("api server stopped", "err", err)
+				}
+			}()
+
 			return srv.Run()
 		},
 	}
@@ -283,6 +312,18 @@ func controlAddrPortSuffix() string {
 		return controlAddr
 	}
 	return ":" + port
+}
+
+func mustPort(addr string) int {
+	_, portStr, err := splitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 func splitHostPort(addr string) (host, port string, err error) {

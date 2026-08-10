@@ -40,3 +40,17 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
 );
 
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_tunnel_ts ON traffic_samples(tunnel_id, ts);
+
+-- Short-lived, single-use codes shown as part of the 'Add machine' install
+-- command. portly-client's 'enroll' subcommand exchanges one of these for
+-- the client's real long-lived token, so the token itself never has to be
+-- copy-pasted by hand.
+-- token is the plaintext client token, held here only until the code is
+-- exchanged (or it expires); the row is deleted immediately after exchange.
+CREATE TABLE IF NOT EXISTS enrollment_codes (
+    code_hash   TEXT PRIMARY KEY,
+    client_id   TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    token       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL
+);
