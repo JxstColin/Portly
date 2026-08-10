@@ -40,7 +40,16 @@ UI for managing clients, tunnels and traffic is planned (see
 
 ## Building
 
-Requires Go 1.25+.
+Requires Go 1.25+. If your VPS doesn't have Go installed (or has an older
+version), `scripts/install-go.sh` installs the latest release from go.dev
+(Linux amd64/arm64/armv6l):
+
+```bash
+sudo ./scripts/install-go.sh
+source /etc/profile.d/go.sh   # or start a new shell
+```
+
+Then build:
 
 ```bash
 go build -o bin/portly-server ./cmd/portly-server
