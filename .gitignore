@@ -1,0 +1,10 @@
+/bin/
+*.db
+*.db-shm
+*.db-wal
+*.pem
+portly-client.yaml
+/data/
+/devdata/
+node_modules/
+.next/

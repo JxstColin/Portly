@@ -1,0 +1,19 @@
+[Unit]
+Description=Portly reverse-tunnel client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=portly
+Group=portly
+ExecStart=/usr/local/bin/portly-client --config /etc/portly/portly-client.yaml run
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
