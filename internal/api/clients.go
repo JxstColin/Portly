@@ -86,6 +86,14 @@ func (s *Server) installCommand(code string) string {
 
 func (s *Server) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	// Tell the machine to clean itself up before forgetting about it. If
+	// it's offline right now, DeleteClient below still revokes its token,
+	// so it gets the same instruction the moment it next tries to connect.
+	if s.Tunnels.PushUninstall(id) {
+		s.Log.Info("pushed uninstall to connected client", "client_id", id)
+	}
+
 	if err := s.DB.DeleteClient(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

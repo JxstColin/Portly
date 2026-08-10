@@ -1,7 +1,7 @@
 // Package tunnel implements Portly's control-plane and data-plane: the
 // server accepts authenticated client sessions, multiplexes them via yamux,
-// and dynamically opens/closes public TCP listeners per tunnel without ever
-// needing a process restart. The client mirrors this to receive tunnel
+// and dynamically opens/closes public TCP/UDP listeners per tunnel without
+// ever needing a process restart. The client mirrors this to receive tunnel
 // config and dial local targets.
 package tunnel
 
@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -21,8 +22,9 @@ import (
 )
 
 const (
-	authTimeout       = 10 * time.Second
-	reconcileInterval = 3 * time.Second
+	authTimeout          = 10 * time.Second
+	reconcileInterval    = 3 * time.Second
+	trafficFlushInterval = 1 * time.Second
 )
 
 type Server struct {
@@ -36,6 +38,9 @@ type Server struct {
 
 	listenersMu sync.Mutex
 	listeners   map[string]*publicListener // tunnel ID -> running listener
+
+	trafficMu sync.Mutex
+	liveBytes map[string]*liveCounter // tunnel ID -> live in-memory counters
 }
 
 type clientSession struct {
@@ -49,8 +54,15 @@ type clientSession struct {
 
 type publicListener struct {
 	tunnelID string
-	ln       net.Listener
+	closer   io.Closer
 	cancel   func()
+}
+
+// liveCounter holds cumulative byte counts for a tunnel, updated as bytes
+// actually flow (not just when a connection closes), so the WS live feed
+// and the periodic DB flush both see real-time-accurate totals.
+type liveCounter struct {
+	in, out int64 // access via atomic
 }
 
 func NewServer(database *db.DB, tlsConfig *tls.Config, controlAddr string, logger *slog.Logger) *Server {
@@ -64,11 +76,12 @@ func NewServer(database *db.DB, tlsConfig *tls.Config, controlAddr string, logge
 		Log:         logger,
 		sessions:    make(map[string]*clientSession),
 		listeners:   make(map[string]*publicListener),
+		liveBytes:   make(map[string]*liveCounter),
 	}
 }
 
-// Run starts the control-plane listener and the reconciliation loop. It
-// blocks until the listener fails or the process is terminated.
+// Run starts the control-plane listener and the reconciliation/traffic
+// loops. It blocks until the listener fails or the process is terminated.
 func (s *Server) Run() error {
 	ln, err := tls.Listen("tcp", s.ControlAddr, s.TLSConfig)
 	if err != nil {
@@ -79,6 +92,7 @@ func (s *Server) Run() error {
 	s.Log.Info("control-plane listening", "addr", s.ControlAddr)
 
 	go s.reconcileLoop()
+	go s.trafficFlushLoop()
 
 	for {
 		conn, err := ln.Accept()
@@ -100,10 +114,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	client, err := s.DB.GetClientByTokenHash(db.HashToken(req.Token))
+	tokenHash := db.HashToken(req.Token)
+	client, err := s.DB.GetClientByTokenHash(tokenHash)
 	if err != nil {
-		log.Warn("auth rejected: unknown token")
-		protocol.WriteFrame(conn, protocol.AuthResponse{OK: false, Error: "invalid token"})
+		if s.DB.IsTokenRevoked(tokenHash) {
+			log.Info("rejecting deleted client, telling it to uninstall")
+			protocol.WriteFrame(conn, protocol.AuthResponse{OK: false, Uninstall: true, Error: "this machine was removed in the Portly UI"})
+		} else {
+			log.Warn("auth rejected: unknown token")
+			protocol.WriteFrame(conn, protocol.AuthResponse{OK: false, Error: "invalid token"})
+		}
 		conn.Close()
 		return
 	}
@@ -170,6 +190,28 @@ func (s *Server) ConnectedClientIDs() map[string]bool {
 	return out
 }
 
+// PushUninstall tells a connected client to uninstall itself and disconnects
+// it, for immediate effect when its machine is deleted in the UI. Returns
+// false if the client wasn't connected (its token is still revoked via the
+// DB, so it'll get the same instruction the next time it tries to connect).
+func (s *Server) PushUninstall(clientID string) bool {
+	s.mu.RLock()
+	cs, ok := s.sessions[clientID]
+	s.mu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	cs.writeMu.Lock()
+	err := protocol.WriteFrame(cs.controlStream, protocol.TunnelConfigPush{Uninstall: true})
+	cs.writeMu.Unlock()
+	if err != nil {
+		s.Log.Warn("push uninstall failed", "client", cs.name, "err", err)
+		return false
+	}
+	return true
+}
+
 // pushTunnelConfig sends the client's current tunnel set over its control
 // stream, if it changed since the last push.
 func (s *Server) pushTunnelConfig(cs *clientSession) {
@@ -191,9 +233,9 @@ func (s *Server) pushTunnelConfig(cs *clientSession) {
 			LocalHost:  t.LocalHost,
 			LocalPort:  t.LocalPort,
 			PublicPort: t.PublicPort,
-			Protocol:   protocol.ProtocolTCP,
+			Protocol:   protocol.Protocol(t.Protocol),
 		})
-		fingerprint += fmt.Sprintf("%s:%s:%d;", t.ID, t.LocalHost, t.LocalPort)
+		fingerprint += fmt.Sprintf("%s:%s:%d:%s;", t.ID, t.LocalHost, t.LocalPort, t.Protocol)
 	}
 
 	if fingerprint == cs.lastPushed {
@@ -257,7 +299,7 @@ func (s *Server) reconcileListeners() {
 	for id, pl := range s.listeners {
 		if _, ok := wanted[id]; !ok {
 			pl.cancel()
-			pl.ln.Close()
+			pl.closer.Close()
 			delete(s.listeners, id)
 			s.Log.Info("stopped tunnel listener", "tunnel_id", id)
 		}
@@ -278,6 +320,13 @@ func (s *Server) reconcileListeners() {
 }
 
 func (s *Server) startTunnelListener(t db.Tunnel) (*publicListener, error) {
+	if t.Protocol == string(protocol.ProtocolUDP) {
+		return s.startUDPListener(t)
+	}
+	return s.startTCPListener(t)
+}
+
+func (s *Server) startTCPListener(t db.Tunnel) (*publicListener, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", t.PublicPort))
 	if err != nil {
 		return nil, err
@@ -287,7 +336,7 @@ func (s *Server) startTunnelListener(t db.Tunnel) (*publicListener, error) {
 	cancel := func() { close(stop) }
 
 	go func() {
-		s.Log.Info("tunnel listener started", "tunnel", t.Name, "public_port", t.PublicPort, "client_id", t.ClientID)
+		s.Log.Info("tunnel listener started", "tunnel", t.Name, "protocol", "tcp", "public_port", t.PublicPort, "client_id", t.ClientID)
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -303,7 +352,7 @@ func (s *Server) startTunnelListener(t db.Tunnel) (*publicListener, error) {
 		}
 	}()
 
-	return &publicListener{tunnelID: t.ID, ln: ln, cancel: cancel}, nil
+	return &publicListener{tunnelID: t.ID, closer: ln, cancel: cancel}, nil
 }
 
 func (s *Server) proxyConn(t db.Tunnel, publicConn net.Conn) {
@@ -329,33 +378,98 @@ func (s *Server) proxyConn(t db.Tunnel, publicConn net.Conn) {
 		return
 	}
 
-	bytesIn, bytesOut := pipe(publicConn, stream)
-	if bytesIn > 0 || bytesOut > 0 {
-		s.DB.AddTunnelTraffic(t.ID, bytesIn, bytesOut)
+	lc := s.getLiveCounter(t.ID)
+	pipe(publicConn, stream, &lc.in, &lc.out)
+}
+
+// getLiveCounter returns (creating if necessary) the in-memory byte counter
+// for a tunnel. It's never reset — it mirrors the DB total, just updated in
+// real time instead of only at connection-close or on a fixed tick.
+func (s *Server) getLiveCounter(tunnelID string) *liveCounter {
+	s.trafficMu.Lock()
+	defer s.trafficMu.Unlock()
+	c, ok := s.liveBytes[tunnelID]
+	if !ok {
+		c = &liveCounter{}
+		s.liveBytes[tunnelID] = c
+	}
+	return c
+}
+
+// LiveBytesSnapshot returns each tunnel's current cumulative byte counts
+// as of right now (sub-second fresh), for the WS live feed to compute
+// accurate throughput without waiting on the DB flush cadence.
+func (s *Server) LiveBytesSnapshot() map[string][2]int64 {
+	s.trafficMu.Lock()
+	defer s.trafficMu.Unlock()
+	out := make(map[string][2]int64, len(s.liveBytes))
+	for id, c := range s.liveBytes {
+		out[id] = [2]int64{atomic.LoadInt64(&c.in), atomic.LoadInt64(&c.out)}
+	}
+	return out
+}
+
+// trafficFlushLoop periodically persists the delta since the last flush for
+// every tunnel with in-memory activity, so totals/history in the DB stay
+// close to real time instead of only updating when a connection ends
+// (which, for a long-lived connection, could be hours away).
+func (s *Server) trafficFlushLoop() {
+	ticker := time.NewTicker(trafficFlushInterval)
+	defer ticker.Stop()
+
+	lastFlushed := make(map[string][2]int64)
+	for range ticker.C {
+		for id, cur := range s.LiveBytesSnapshot() {
+			prev := lastFlushed[id]
+			deltaIn := cur[0] - prev[0]
+			deltaOut := cur[1] - prev[1]
+			if deltaIn <= 0 && deltaOut <= 0 {
+				continue
+			}
+			if err := s.DB.AddTunnelTraffic(id, deltaIn, deltaOut); err != nil {
+				s.Log.Warn("flush traffic failed", "tunnel_id", id, "err", err)
+				continue
+			}
+			lastFlushed[id] = cur
+		}
 	}
 }
 
-// pipe copies bytes bidirectionally between a (client) and b (tunnel stream)
-// until either side closes, returning bytes read from a (in) and from b (out).
-func pipe(a, b io.ReadWriteCloser) (bytesIn, bytesOut int64) {
+// countingReader wraps a reader, atomically adding every byte actually read
+// to counter — used so pipe() reports live throughput as data flows instead
+// of only once the whole copy finishes.
+type countingReader struct {
+	io.Reader
+	counter *int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	if n > 0 {
+		atomic.AddInt64(c.counter, int64(n))
+	}
+	return n, err
+}
+
+// pipe copies bytes bidirectionally between a and b until either side
+// closes, atomically adding to inCounter (a->b) and outCounter (b->a) as
+// bytes actually flow.
+func pipe(a, b io.ReadWriteCloser, inCounter, outCounter *int64) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(b, a)
-		bytesIn = n
+		io.Copy(b, &countingReader{Reader: a, counter: inCounter})
 		b.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(a, b)
-		bytesOut = n
+		io.Copy(a, &countingReader{Reader: b, counter: outCounter})
 		a.Close()
 	}()
 
 	wg.Wait()
-	return
 }
 
 func yamuxConfig() *yamux.Config {

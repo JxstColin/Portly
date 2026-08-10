@@ -28,9 +28,17 @@ esac
 BASE="%[1]s"
 CODE="%[2]s"
 
+# Download to a temp file in the same directory as the target, then rename
+# into place. A running portly-client keeps its old binary mapped even
+# after this replaces the directory entry, so re-running the installer
+# (e.g. to rotate a machine's credentials) never fails trying to overwrite
+# an in-use executable.
 echo "Downloading portly-client for ${OS}/${ARCH}..."
-curl -fsSL -o /usr/local/bin/portly-client "${BASE}/downloads/${OS}-${ARCH}"
-chmod +x /usr/local/bin/portly-client
+TMP_BIN="$(mktemp /usr/local/bin/portly-client.XXXXXX)"
+curl -fsSL -o "${TMP_BIN}" "${BASE}/downloads/${OS}-${ARCH}"
+chmod +x "${TMP_BIN}"
+systemctl stop portly-client 2>/dev/null || true
+mv -f "${TMP_BIN}" /usr/local/bin/portly-client
 
 echo "Enrolling with ${BASE}..."
 exec /usr/local/bin/portly-client enroll --api "${BASE}" --code "${CODE}"

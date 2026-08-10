@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, TunnelProtocol } from "@/lib/api";
 
 export function AddTunnelForm({
   clientId,
@@ -13,6 +13,7 @@ export function AddTunnelForm({
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
+  const [protocol, setProtocol] = useState<TunnelProtocol>("tcp");
   const [localHost, setLocalHost] = useState("127.0.0.1");
   const [localPort, setLocalPort] = useState("");
   const [publicPort, setPublicPort] = useState("");
@@ -27,6 +28,7 @@ export function AddTunnelForm({
       await api.createTunnel({
         client_id: clientId,
         name: name.trim() || `${localHost}:${localPort}`,
+        protocol,
         local_host: localHost.trim() || "127.0.0.1",
         local_port: Number(localPort),
         public_port: Number(publicPort),
@@ -45,7 +47,7 @@ export function AddTunnelForm({
       onSubmit={onSubmit}
       className="rounded-xl border border-border bg-surface p-4"
     >
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <div className="col-span-2 sm:col-span-1">
           <label className="block text-xs font-medium mb-1 text-foreground-secondary">Name</label>
           <input
@@ -54,6 +56,17 @@ export function AddTunnelForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
+        </div>
+        <div>
+          <label className="block text-xs font-medium mb-1 text-foreground-secondary">Protocol</label>
+          <select
+            className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+            value={protocol}
+            onChange={(e) => setProtocol(e.target.value as TunnelProtocol)}
+          >
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+          </select>
         </div>
         <div>
           <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local host</label>

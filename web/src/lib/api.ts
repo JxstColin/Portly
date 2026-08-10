@@ -55,10 +55,13 @@ export interface Client {
   connected: boolean;
 }
 
+export type TunnelProtocol = "tcp" | "udp";
+
 export interface Tunnel {
   id: string;
   client_id: string;
   name: string;
+  protocol: TunnelProtocol;
   local_host: string;
   local_port: number;
   public_port: number;
@@ -117,6 +120,7 @@ export const api = {
   createTunnel: (params: {
     client_id: string;
     name: string;
+    protocol: TunnelProtocol;
     local_host: string;
     local_port: number;
     public_port: number;

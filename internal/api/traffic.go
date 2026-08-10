@@ -49,10 +49,13 @@ type livePrev struct {
 	at                time.Time
 }
 
-// handleLiveWS streams per-tunnel throughput to the UI every 2s so the
-// dashboard's bandwidth graphs update without polling. Origin verification
-// is skipped here because the connection already passed requireAuth's
-// cookie check, which is the actual trust boundary.
+// handleLiveWS streams per-tunnel throughput to the UI every second so the
+// dashboard's bandwidth graphs update close to real time. It reads byte
+// counts from the tunnel server's in-memory live counters (updated as
+// bytes actually flow) rather than the DB, which is only flushed once a
+// second — using it directly here would double that latency for no reason.
+// Origin verification is skipped here because the connection already
+// passed requireAuth's cookie check, which is the actual trust boundary.
 func (s *Server) handleLiveWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
@@ -71,7 +74,7 @@ func (s *Server) handleLiveWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	prev := make(map[string]livePrev)
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -84,22 +87,28 @@ func (s *Server) handleLiveWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			connected := s.Tunnels.ConnectedClientIDs()
+			live := s.Tunnels.LiveBytesSnapshot()
 
 			stats := make([]liveTunnelStat, 0, len(tunnels))
 			for _, t := range tunnels {
+				bytesIn, bytesOut := t.BytesInTotal, t.BytesOutTotal
+				if l, ok := live[t.ID]; ok {
+					bytesIn, bytesOut = l[0], l[1]
+				}
+
 				stat := liveTunnelStat{
 					ID: t.ID, Name: t.Name, ClientID: t.ClientID,
 					Connected: connected[t.ClientID], Enabled: t.Enabled,
-					BytesInTotal: t.BytesInTotal, BytesOutTotal: t.BytesOutTotal,
+					BytesInTotal: bytesIn, BytesOutTotal: bytesOut,
 				}
 				if p, ok := prev[t.ID]; ok {
 					elapsed := now.Sub(p.at).Seconds()
 					if elapsed > 0 {
-						stat.RateInBps = int64(float64(t.BytesInTotal-p.bytesIn) / elapsed)
-						stat.RateOutBps = int64(float64(t.BytesOutTotal-p.bytesOut) / elapsed)
+						stat.RateInBps = int64(float64(bytesIn-p.bytesIn) / elapsed)
+						stat.RateOutBps = int64(float64(bytesOut-p.bytesOut) / elapsed)
 					}
 				}
-				prev[t.ID] = livePrev{bytesIn: t.BytesInTotal, bytesOut: t.BytesOutTotal, at: now}
+				prev[t.ID] = livePrev{bytesIn: bytesIn, bytesOut: bytesOut, at: now}
 				stats = append(stats, stat)
 			}
 
