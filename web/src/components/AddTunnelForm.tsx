@@ -79,84 +79,89 @@ export function AddTunnelForm({
   }
 
   return (
-    <form
-      onSubmit={onSubmit}
-      className="rounded-xl border border-border bg-surface p-4"
-    >
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <div className="col-span-2 sm:col-span-1">
-          <label className="block text-xs font-medium mb-1 text-foreground-secondary">Name</label>
-          <input
-            className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-            placeholder="minecraft"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium mb-1 text-foreground-secondary">Protocol</label>
-          <Select
-            value={protocol}
-            onChange={setProtocol}
-            options={[
-              { value: "tcp", label: "TCP" },
-              { value: "udp", label: "UDP" },
-            ]}
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local host</label>
-          <Combobox
-            value={localHost}
-            onChange={setLocalHost}
-            options={localHostOptions}
-            placeholder="127.0.0.1"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local port</label>
-          <input
-            type="number"
-            min={1}
-            max={65535}
-            required
-            className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-            value={localPort}
-            onChange={(e) => setLocalPort(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium mb-1 text-foreground-secondary">Public port</label>
-          <input
-            type="number"
-            min={1}
-            max={65535}
-            required
-            className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-            value={publicPort}
-            onChange={(e) => setPublicPort(e.target.value)}
-          />
-        </div>
-      </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="w-full max-w-2xl rounded-xl border border-border bg-surface p-6 shadow-lg">
+        <h2 className="text-lg font-semibold">Add tunnel</h2>
+        <p className="mt-1 text-sm text-foreground-secondary">
+          Expose a port on this machine through the tunnel server.
+        </p>
+        <form onSubmit={onSubmit} className="mt-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <div className="col-span-2 sm:col-span-1">
+              <label className="block text-xs font-medium mb-1 text-foreground-secondary">Name</label>
+              <input
+                className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+                placeholder="minecraft"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-foreground-secondary">Protocol</label>
+              <Select
+                value={protocol}
+                onChange={setProtocol}
+                options={[
+                  { value: "tcp", label: "TCP" },
+                  { value: "udp", label: "UDP" },
+                ]}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local host</label>
+              <Combobox
+                value={localHost}
+                onChange={setLocalHost}
+                options={localHostOptions}
+                placeholder="127.0.0.1"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local port</label>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                required
+                className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+                value={localPort}
+                onChange={(e) => setLocalPort(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-foreground-secondary">Public port</label>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                required
+                className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+                value={publicPort}
+                onChange={(e) => setPublicPort(e.target.value)}
+              />
+            </div>
+          </div>
 
-      {error && <p className="mt-2 text-sm text-[color:var(--status-critical)]">{error}</p>}
+          {error && <p className="mt-2 text-sm text-[color:var(--status-critical)]">{error}</p>}
 
-      <div className="mt-3 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary hover:bg-surface-raised"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
-        >
-          {submitting ? "Creating…" : "Create tunnel"}
-        </button>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary hover:bg-surface-raised"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+            >
+              {submitting ? "Creating…" : "Create tunnel"}
+            </button>
+          </div>
+        </form>
       </div>
-    </form>
+    </div>
   );
 }
