@@ -4,12 +4,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -27,7 +30,7 @@ func main() {
 	}
 	root.PersistentFlags().StringVar(&configPath, "config", "portly-client.yaml", "path to client config file")
 
-	root.AddCommand(runCmd(&configPath), initCmd(&configPath), enrollCmd())
+	root.AddCommand(runCmd(&configPath), initCmd(&configPath), enrollCmd(), uninstallCmd(&configPath))
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -65,6 +68,46 @@ func runCmd(configPath *string) *cobra.Command {
 			return err
 		},
 	}
+}
+
+// uninstallCmd is the manual/local counterpart to the automatic uninstall
+// that runs when a machine is deleted in the web UI — for when the server
+// is unreachable or gone, or you just don't want to go through the panel.
+func uninstallCmd(configPath *string) *cobra.Command {
+	var yes bool
+
+	c := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Stop and remove portly-client from this machine",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := *configPath
+			if path == "portly-client.yaml" { // untouched default — prefer the real install path if it's there
+				if _, err := os.Stat(systemConfigPath); err == nil {
+					path = systemConfigPath
+				}
+			}
+
+			if !yes {
+				fmt.Printf("This will stop the service, remove %s, and delete this binary. Continue? [y/N] ", path)
+				reader := bufio.NewReader(os.Stdin)
+				answer, _ := reader.ReadString('\n')
+				if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+					fmt.Println("Aborted.")
+					return nil
+				}
+			}
+
+			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+			if hasSystemd() {
+				exec.Command("systemctl", "stop", "portly-client").Run()
+			}
+			performSelfUninstall(path, logger)
+			fmt.Println("Uninstalled.")
+			return nil
+		},
+	}
+	c.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
+	return c
 }
 
 func initCmd(configPath *string) *cobra.Command {

@@ -153,6 +153,45 @@ checker wired up yet (their config predates it) — re-run their install
 command once (**Add machine** → same machine name is fine, it just
 re-enrolls) and they'll self-update automatically from then on.
 
+## Uninstalling
+
+**VPS (`portly-server` + web UI):**
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/uninstall-vps.sh?$(date +%s)" | sudo bash
+```
+
+Stops and disables both systemd services, removes their unit files, the
+installed binaries, the `/opt/portly-src` checkout, the `portly` system
+user, and (after confirming — this is irreversible) all server data in
+`/var/lib/portly`: the SQLite DB, meaning every client, tunnel, and the
+admin account. Pass `--keep-data` to keep that directory instead (a
+later `quickstart-vps.sh` reinstall picks it back up as-is), `-y`/`--yes`
+to skip the confirmation prompt, or `--keep-source` to leave the git
+checkout in place. Run `--help`-style, i.e. read the flags at the top of
+[`scripts/uninstall-vps.sh`](scripts/uninstall-vps.sh), for the full list.
+
+This only touches the server side — it doesn't reach out to any enrolled
+machines. Delete them from the panel first (each one gets told to
+uninstall itself, live if it's online) if you want them cleaned up too;
+otherwise see the next section.
+
+**Just want to wipe the data and start over, without removing the
+services?** Use **Factory reset** in the web UI's Settings → Account tab
+instead — see [Security notes](#security-notes) below for what it does.
+
+**A single machine (`portly-client`):** normally you just delete it from
+the panel and it uninstalls itself automatically, live if it's online.
+If the panel is unreachable (or gone) and you're on the machine directly,
+run this there instead:
+
+```bash
+sudo portly-client uninstall
+```
+
+Stops the systemd service, removes its unit file, config, and its own
+binary. Prompts for confirmation; pass `-y`/`--yes` to skip it.
+
 ## CLI-only path (no web UI)
 
 Everything above is also available from the CLI, useful for scripting or if
@@ -184,6 +223,7 @@ portly-server tunnel rm <id>            Delete a tunnel
 portly-client init [flags]              Write portly-client.yaml manually
 portly-client enroll --api <url> --code <code>   Exchange a web-UI enrollment code (used by /install.sh)
 portly-client run                       Connect and service tunnels
+portly-client uninstall                 Stop and remove this machine's install (see 'Uninstalling' above)
 ```
 
 Global flags on `portly-server`: `--data-dir` (default `/var/lib/portly`),
@@ -261,6 +301,17 @@ all of this in one step.
   the moment it's claimed and the panel refuses to issue a second admin
   account afterwards — an already-running install's admin account isn't
   affected by any of this.
+- **Factory reset** (Settings → Account, bottom of the page) deletes every
+  client, tunnel, and traffic sample, and the admin account itself, putting
+  the DB back in the same state as a fresh install — a new one-time setup
+  code is generated immediately after, same as on first run. Any currently
+  connected machine is told to uninstall itself first; offline ones learn
+  the same way the next time they try to reconnect (their token gets
+  revoked, same mechanism as deleting one machine individually). Requires
+  typing `RESET` to confirm and immediately invalidates every admin
+  session, including the one that triggered it. The control-plane TLS
+  identity (CA/certificate fingerprint) is *not* regenerated — already
+  enrolled-but-not-yet-uninstalled machines still trust the same server.
 - Client tokens are 256-bit random values; only their SHA-256 hash is stored
   server-side. The "Add machine" flow never displays the token itself —
   only a short-lived, single-use enrollment code that `portly-client enroll`
@@ -304,7 +355,7 @@ internal/tlsutil         self-signed CA + fingerprint-pinned TLS (control-plane)
 internal/netutil         public IP auto-detection
 internal/config          client config file (YAML)
 web/                      Next.js + Tailwind web UI (separate process)
-scripts/                 install-go.sh, quickstart-vps.sh
+scripts/                 install-go.sh, quickstart-vps.sh, uninstall-vps.sh
 deploy/systemd/          manual-setup unit file templates
 ```
 
@@ -316,9 +367,10 @@ self-update themselves), the management API, the one-command "Add
 machine" installer (with a "Get install command" fallback if the original
 code expired or got closed unused), the Next.js/Tailwind web UI (clients,
 tunnels, LAN device suggestions, live + historical bandwidth), setup-code-
-gated first-run bootstrap (no seeded default password), and zero-config
-setup (public IP auto-detection, optional domain + automatic Let's Encrypt
-HTTPS from the Settings → Domain page).
+gated first-run bootstrap (no seeded default password), zero-config setup
+(public IP auto-detection, optional domain + automatic Let's Encrypt HTTPS
+from the Settings → Domain page), and clean uninstall paths (a VPS
+uninstall script, `portly-client uninstall`, and a panel factory reset).
 
 Ideas for later: traffic quotas/limits with automatic pause, alert delivery
 beyond the in-UI dashboard (e.g. webhooks), Layer-7 HTTP/HTTPS tunnels

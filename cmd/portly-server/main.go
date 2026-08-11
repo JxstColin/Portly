@@ -101,6 +101,25 @@ func openDB() (*db.DB, error) {
 	return db.Open(filepath.Join(dataDir, "portly.db"))
 }
 
+// writeSetupCode generates (if needed) and surfaces the one-time setup
+// code required to claim the first admin account — used both on initial
+// startup and after a factory reset, which puts the DB back in the same
+// no-admin state a fresh install starts in.
+func writeSetupCode(database *db.DB, logger *slog.Logger, path string) {
+	code, hasAdmin, err := database.EnsureSetupCode()
+	if err != nil {
+		logger.Warn("could not prepare setup code", "err", err)
+		return
+	}
+	if hasAdmin {
+		return
+	}
+	if err := os.WriteFile(path, []byte(code+"\n"), 0o600); err != nil {
+		logger.Warn("could not write setup code file", "path", path, "err", err)
+	}
+	logger.Warn("no admin account yet — open the web UI and enter this setup code to create one", "setup_code", code)
+}
+
 func runCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "run",
@@ -115,14 +134,7 @@ func runCmd() *cobra.Command {
 			defer database.Close()
 
 			setupCodePath := filepath.Join(dataDir, "setup-code.txt")
-			if code, hasAdmin, err := database.EnsureSetupCode(); err != nil {
-				logger.Warn("could not prepare setup code", "err", err)
-			} else if !hasAdmin {
-				if err := os.WriteFile(setupCodePath, []byte(code+"\n"), 0o600); err != nil {
-					logger.Warn("could not write setup code file", "path", setupCodePath, "err", err)
-				}
-				logger.Warn("no admin account yet — open the web UI and enter this setup code to create one", "setup_code", code)
-			}
+			writeSetupCode(database, logger, setupCodePath)
 
 			hosts := resolveAdvertiseHosts(logger)
 
@@ -191,6 +203,9 @@ func runCmd() *cobra.Command {
 				if err := os.Remove(setupCodePath); err != nil && !os.IsNotExist(err) {
 					logger.Warn("could not remove setup code file", "path", setupCodePath, "err", err)
 				}
+			}
+			apiSrv.OnFactoryReset = func() {
+				writeSetupCode(database, logger, setupCodePath)
 			}
 
 			go func() {

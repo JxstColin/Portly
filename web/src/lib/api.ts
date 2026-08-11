@@ -183,6 +183,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ domain }),
     }),
+
+  factoryReset: (confirm: string) =>
+    request<void>("/api/settings/factory-reset", {
+      method: "POST",
+      body: JSON.stringify({ confirm }),
+    }),
 };
 
 export interface LiveTunnelStat {

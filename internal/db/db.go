@@ -289,6 +289,59 @@ func (d *DB) DeleteClient(id string) error {
 	return tx.Commit()
 }
 
+// FactoryReset wipes every client, tunnel, traffic sample, and the admin
+// account, reverting the server to the same blank state as a fresh
+// install — the next request to EnsureSetupCode generates a new setup
+// code. Every current client's token is revoked first (same as
+// DeleteClient), so any machine still out there gets told to uninstall
+// itself the next time it tries to reconnect, rather than just failing
+// silently. The control-plane TLS identity (CA/cert) is untouched.
+func (d *DB) FactoryReset() error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT token_hash FROM clients`)
+	if err != nil {
+		return err
+	}
+	var hashes []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return err
+		}
+		hashes = append(hashes, h)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	now := time.Now().Unix()
+	for _, h := range hashes {
+		if _, err := tx.Exec(
+			`INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at) VALUES (?, ?)`,
+			h, now,
+		); err != nil {
+			return err
+		}
+	}
+
+	// clients cascades to tunnels/enrollment_codes/traffic_samples via their
+	// ON DELETE CASCADE foreign keys.
+	for _, table := range []string{"clients", "admin_users", "server_settings"} {
+		if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // IsTokenRevoked reports whether a token belonged to a client that has
 // since been deleted.
 func (d *DB) IsTokenRevoked(tokenHash string) bool {
