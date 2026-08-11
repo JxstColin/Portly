@@ -10,6 +10,7 @@ var domainPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0
 
 type setupStatusResponse struct {
 	PublicIP    string `json:"public_ip"`
+	PublicIPv6  string `json:"public_ipv6,omitempty"`
 	ControlPort int    `json:"control_port"`
 	Domain      string `json:"domain,omitempty"`
 	CertState   string `json:"cert_state,omitempty"` // "", "pending", "ready", "error"
@@ -20,6 +21,7 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	certState, certErr := s.getCertState()
 	writeJSON(w, http.StatusOK, setupStatusResponse{
 		PublicIP:    s.AdvertiseHost,
+		PublicIPv6:  s.AdvertiseHostV6,
 		ControlPort: s.ControlPort,
 		Domain:      s.Domain(),
 		CertState:   certState,

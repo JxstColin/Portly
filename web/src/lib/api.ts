@@ -94,6 +94,7 @@ export type CertState = "" | "pending" | "ready" | "error";
 
 export interface SetupStatus {
   public_ip: string;
+  public_ipv6?: string;
   control_port: number;
   domain?: string;
   cert_state?: CertState;

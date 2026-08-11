@@ -26,15 +26,16 @@ const sessionCookieName = "portly_session"
 const sessionTTL = 7 * 24 * time.Hour
 
 type Server struct {
-	DB             *db.DB
-	Tunnels        *tunnel.Server
-	Log            *slog.Logger
-	AdvertiseHost  string
-	ControlPort    int
-	APIPort        int
-	CAFingerprint  string
-	AllowedOrigins []string
-	ClientBinaries map[string][]byte // "linux-amd64" etc -> raw portly-client binary
+	DB              *db.DB
+	Tunnels         *tunnel.Server
+	Log             *slog.Logger
+	AdvertiseHost   string
+	AdvertiseHostV6 string // best-effort detected IPv6, "" if none/unavailable
+	ControlPort     int
+	APIPort         int
+	CAFingerprint   string
+	AllowedOrigins  []string
+	ClientBinaries  map[string][]byte // "linux-amd64" etc -> raw portly-client binary
 
 	// WebUpstream, if set, is where non-API requests get reverse-proxied
 	// (the Next.js UI process, e.g. "http://127.0.0.1:3000") so the browser
