@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { AddMachineModal } from "@/components/AddMachineModal";
 import { StatusDot } from "@/components/StatusDot";
-import { api, Client } from "@/lib/api";
+import { api, Client, SetupStatus } from "@/lib/api";
 
 function timeAgo(unixSeconds?: number): string {
   if (!unixSeconds) return "never";
@@ -20,6 +20,7 @@ function DashboardContent() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -36,6 +37,10 @@ function DashboardContent() {
     return () => clearInterval(interval);
   }, [load]);
 
+  useEffect(() => {
+    api.getSetup().then(setSetup).catch(() => {});
+  }, []);
+
   async function removeClient(id: string) {
     if (!confirm("Delete this machine and all its tunnels?")) return;
     await api.deleteClient(id);
@@ -44,6 +49,19 @@ function DashboardContent() {
 
   return (
     <div>
+      {setup && !setup.domain && (
+        <Link
+          href="/setup"
+          className="mb-4 flex items-center justify-between rounded-lg border border-border bg-surface px-4 py-2.5 text-sm hover:bg-surface-raised"
+        >
+          <span className="text-foreground-secondary">
+            You&apos;re on <code className="font-mono">{setup.public_ip}</code> — add a
+            domain for a proper URL and automatic HTTPS.
+          </span>
+          <span className="font-medium text-accent">Set up →</span>
+        </Link>
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold tracking-tight">Machines</h1>
         <button
