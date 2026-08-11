@@ -150,6 +150,88 @@ function AccountTab({ firstLogin }: { firstLogin: boolean }) {
           {submitting ? "Saving…" : "Save changes"}
         </button>
       </form>
+
+      <DangerZone />
+    </div>
+  );
+}
+
+function DangerZone() {
+  const router = useRouter();
+  const { refresh } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onReset() {
+    setError(null);
+    setSubmitting(true);
+    try {
+      await api.factoryReset(confirmText.trim());
+      // The admin account (and this session) is gone server-side, but the
+      // auth context doesn't know that yet — refresh it (this 401s and
+      // clears the cached user) before bouncing through the root page,
+      // which only sends us to /bootstrap once it sees no user.
+      await refresh();
+      router.push("/");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Reset failed");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-8 rounded-xl border border-[color:var(--status-critical)]/40 p-6">
+      <h2 className="text-sm font-semibold text-[color:var(--status-critical)]">Danger zone</h2>
+      <p className="mt-1.5 text-sm text-foreground-secondary">
+        Factory reset permanently deletes every machine, tunnel, and traffic
+        history, and removes the admin account — connected machines are
+        told to uninstall themselves first. This server goes back to a
+        blank first-run state; you&apos;ll set up a new admin account with a
+        fresh setup code afterwards.
+      </p>
+
+      {!open ? (
+        <button
+          onClick={() => setOpen(true)}
+          className="mt-4 rounded-lg border border-[color:var(--status-critical)]/40 px-3 py-1.5 text-sm text-[color:var(--status-critical)] hover:bg-[color:var(--status-critical)]/10"
+        >
+          Factory reset…
+        </button>
+      ) : (
+        <div className="mt-4 rounded-lg border border-border bg-surface-raised p-3">
+          <label className="block text-xs font-medium mb-1.5">
+            Type <code className="font-mono">RESET</code> to confirm
+          </label>
+          <input
+            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[color:var(--status-critical)]"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            autoComplete="off"
+          />
+          {error && <p className="mt-2 text-sm text-[color:var(--status-critical)]">{error}</p>}
+          <div className="mt-3 flex justify-end gap-2">
+            <button
+              onClick={() => {
+                setOpen(false);
+                setConfirmText("");
+                setError(null);
+              }}
+              className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary hover:bg-surface"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onReset}
+              disabled={confirmText !== "RESET" || submitting}
+              className="rounded-lg bg-[color:var(--status-critical)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {submitting ? "Resetting…" : "Factory reset"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

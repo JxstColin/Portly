@@ -62,6 +62,11 @@ type Server struct {
 	// up the setup-code file it wrote to disk.
 	OnAdminClaimed func()
 
+	// OnFactoryReset, if set by main.go, is called after a factory reset
+	// wipes the DB, so it can generate and print/write out a fresh setup
+	// code the same way it does on a brand new install.
+	OnFactoryReset func()
+
 	sessMu   sync.Mutex
 	sessions map[string]sessionInfo
 
@@ -160,6 +165,8 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/setup", s.requireAuth(s.handleSetupStatus))
 	mux.HandleFunc("POST /api/setup/domain", s.requireAuth(s.handleSetDomain))
 
+	mux.HandleFunc("POST /api/settings/factory-reset", s.requireAuth(s.handleFactoryReset))
+
 	if s.WebUpstream != "" {
 		if target, err := url.Parse(s.WebUpstream); err == nil {
 			mux.Handle("/", httputil.NewSingleHostReverseProxy(target))
@@ -231,6 +238,14 @@ func (s *Server) sessionAdminID(r *http.Request) (string, bool) {
 func (s *Server) destroySession(token string) {
 	s.sessMu.Lock()
 	delete(s.sessions, token)
+	s.sessMu.Unlock()
+}
+
+// clearAllSessions invalidates every active session — used by factory
+// reset, since the admin account they belong to no longer exists.
+func (s *Server) clearAllSessions() {
+	s.sessMu.Lock()
+	s.sessions = make(map[string]sessionInfo)
 	s.sessMu.Unlock()
 }
 
