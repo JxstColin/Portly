@@ -73,7 +73,7 @@ func (c *Client) Run(ctx context.Context) error {
 		default:
 		}
 
-		err := c.runOnce(ctx)
+		err := c.runOnce(ctx, func() { backoff = minBackoff })
 		if errors.Is(err, ErrUninstalled) {
 			return err
 		}
@@ -94,7 +94,13 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) runOnce(ctx context.Context) error {
+// runOnce dials, authenticates, and services one control-plane session
+// until it drops or ctx is cancelled. onConnected is called once the
+// session is fully established, so the caller can reset its reconnect
+// backoff — otherwise a client that's weathered a handful of disconnects
+// over its lifetime (e.g. every server restart) stays pinned at
+// maxBackoff for good, since nothing else in this loop ever lowers it.
+func (c *Client) runOnce(ctx context.Context, onConnected func()) error {
 	conn, err := tlsutil.DialPinned(c.ServerAddr, c.CAFingerprint)
 	if err != nil {
 		return fmt.Errorf("dial server: %w", err)
@@ -132,9 +138,8 @@ func (c *Client) runOnce(ctx context.Context) error {
 		return fmt.Errorf("accept control stream: %w", err)
 	}
 
-	// Reset backoff on a fully successful handshake by returning nil only
-	// through ctx cancellation; a live session resets naturally since the
-	// caller re-enters runOnce only after this returns.
+	onConnected()
+
 	errCh := make(chan error, 2)
 
 	go func() {
