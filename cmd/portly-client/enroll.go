@@ -24,16 +24,18 @@ const (
 
 func enrollCmd() *cobra.Command {
 	var apiBase, code string
+	var noStart bool
 
 	c := &cobra.Command{
 		Use:   "enroll",
 		Short: "Exchange a one-time enrollment code (from the web UI's 'Add machine') for real credentials, then configure and start the client",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEnroll(apiBase, code)
+			return runEnroll(apiBase, code, noStart)
 		},
 	}
 	c.Flags().StringVar(&apiBase, "api", "", "Portly API base URL, e.g. http://vps-host:8080 (required)")
 	c.Flags().StringVar(&code, "code", "", "one-time enrollment code (required)")
+	c.Flags().BoolVar(&noStart, "no-start", false, "write the config and systemd unit but don't (re)start the service — the caller starts it once it's safe to (see install.sh)")
 	c.MarkFlagRequired("api")
 	c.MarkFlagRequired("code")
 	return c
@@ -47,7 +49,7 @@ type exchangeResponse struct {
 	Error         string `json:"error"`
 }
 
-func runEnroll(apiBase, code string) error {
+func runEnroll(apiBase, code string, noStart bool) error {
 	resp, err := exchangeEnrollCode(apiBase, code)
 	if err != nil {
 		return err
@@ -81,7 +83,7 @@ func runEnroll(apiBase, code string) error {
 	}
 
 	if hasSystemd() {
-		return installSystemdService(configPath)
+		return installSystemdService(configPath, !noStart)
 	}
 
 	fmt.Println("systemd not detected — starting portly-client as a background process instead.")
@@ -118,7 +120,11 @@ func hasSystemd() bool {
 	return err == nil
 }
 
-func installSystemdService(configPath string) error {
+// installSystemdService writes/enables the unit. When start is false, it
+// deliberately does NOT touch the running service — used by install.sh,
+// which needs the config+unit written (so it knows the enrollment actually
+// succeeded) before it's safe to stop whatever might already be running.
+func installSystemdService(configPath string, start bool) error {
 	unit := fmt.Sprintf(`[Unit]
 Description=Portly reverse-tunnel client
 After=network-online.target
@@ -138,10 +144,11 @@ WantedBy=multi-user.target
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 
-	for _, args := range [][]string{
-		{"daemon-reload"},
-		{"enable", "--now", "portly-client"},
-	} {
+	enableArgs := []string{"enable", "portly-client"}
+	if start {
+		enableArgs = []string{"enable", "--now", "portly-client"}
+	}
+	for _, args := range [][]string{{"daemon-reload"}, enableArgs} {
 		cmd := exec.Command("systemctl", args...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -149,8 +156,12 @@ WantedBy=multi-user.target
 		}
 	}
 
-	fmt.Println("Installed and started the portly-client systemd service.")
-	fmt.Println("Check status with: systemctl status portly-client")
+	if start {
+		fmt.Println("Installed and started the portly-client systemd service.")
+		fmt.Println("Check status with: systemctl status portly-client")
+	} else {
+		fmt.Println("Installed the portly-client systemd service (not started yet).")
+	}
 	return nil
 }
 
