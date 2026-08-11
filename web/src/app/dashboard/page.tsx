@@ -109,7 +109,7 @@ function DashboardContent() {
                     <StatusDot connected={c.connected} />
                   </td>
                   <td className="px-4 py-3 text-foreground-secondary">
-                    {timeAgo(c.last_seen)}
+                    {c.connected ? "just now" : timeAgo(c.last_seen)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-3">
