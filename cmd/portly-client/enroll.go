@@ -58,6 +58,7 @@ func runEnroll(apiBase, code string) error {
 		ServerAddr:    resp.ControlAddr,
 		Token:         resp.Token,
 		CAFingerprint: resp.CAFingerprint,
+		APIBase:       apiBase,
 	}
 
 	isRoot := os.Geteuid() == 0

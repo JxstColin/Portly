@@ -52,6 +52,8 @@ func runCmd(configPath *string) *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			go runSelfUpdateLoop(ctx, cfg.APIBase, logger)
+
 			err = c.Run(ctx)
 			if err == context.Canceled {
 				return nil

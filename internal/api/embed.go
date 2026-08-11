@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"strings"
 )
 
@@ -37,4 +39,17 @@ func LoadEmbeddedClientBinaries() (map[string][]byte, error) {
 		out[key] = data
 	}
 	return out, nil
+}
+
+// ChecksumClientBinaries hashes each embedded portly-client binary so
+// running clients can cheaply poll for an update (GET the hash instead of
+// the whole binary) and know when to fetch a new one — see
+// Server.handleDownloadClientChecksum.
+func ChecksumClientBinaries(bins map[string][]byte) map[string]string {
+	out := make(map[string]string, len(bins))
+	for key, data := range bins {
+		sum := sha256.Sum256(data)
+		out[key] = hex.EncodeToString(sum[:])
+	}
+	return out
 }

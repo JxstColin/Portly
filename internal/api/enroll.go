@@ -137,6 +137,21 @@ func (s *Server) handleDownloadClient(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(bin)
 }
 
+// handleDownloadClientChecksum lets an already-installed portly-client poll
+// for updates cheaply: a hex sha256 instead of the full binary. Unauthenticated
+// like handleDownloadClient — it reveals nothing beyond the hash of a public
+// binary.
+func (s *Server) handleDownloadClientChecksum(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("osarch")
+	sum, ok := s.ClientBinarySHA256[key]
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no prebuilt portly-client for %s", key))
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, sum)
+}
+
 type enrollExchangeRequest struct {
 	Code string `json:"code"`
 }
