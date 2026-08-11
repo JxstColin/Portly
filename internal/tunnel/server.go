@@ -255,6 +255,15 @@ func (s *Server) PushUninstall(clientID string) bool {
 // pushTunnelConfig sends the client's current tunnel set over its control
 // stream, if it changed since the last push.
 func (s *Server) pushTunnelConfig(cs *clientSession) {
+	// Called once at connect and then every reconcileInterval for as long as
+	// the session stays open (reconcileClientConfigs), so this doubles as a
+	// cheap "still alive" heartbeat — without it, last_seen would only ever
+	// reflect the moment a long-lived connection first started, showing a
+	// stale "5h ago" for a client that's actually online right now.
+	if err := s.DB.UpdateClientLastSeen(cs.clientID); err != nil {
+		s.Log.Warn("update last_seen failed", "client", cs.name, "err", err)
+	}
+
 	tunnels, err := s.DB.ListTunnelsByClient(cs.clientID)
 	if err != nil {
 		s.Log.Error("list tunnels for push failed", "err", err)
