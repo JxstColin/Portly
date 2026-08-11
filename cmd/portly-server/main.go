@@ -10,8 +10,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/acme/autocert"
@@ -21,7 +24,51 @@ import (
 	"github.com/jxstcolin/portly/internal/netutil"
 	"github.com/jxstcolin/portly/internal/tlsutil"
 	"github.com/jxstcolin/portly/internal/tunnel"
+	"github.com/jxstcolin/portly/internal/updatecheck"
 )
+
+// buildCommit is set via -ldflags at build time (see Makefile) to the git
+// commit this binary was built from — "dev" for an unset/from-source build,
+// which disables the update checker entirely (see updatecheck.Check).
+var buildCommit = "dev"
+
+// updateScriptPath is the script the one-click update sudo grant (if
+// enabled via quickstart-vps.sh --enable-update-button) permits the
+// 'portly' user to run as root, with no arguments. Must match exactly what
+// that flag writes to /etc/sudoers.d/portly-update.
+const updateScriptPath = "/opt/portly-src/scripts/quickstart-vps.sh"
+
+// sudoUpdateAllowed probes (without running anything) whether the current
+// user is allowed to run updateScriptPath as root without a password —
+// i.e. whether quickstart-vps.sh --enable-update-button was ever run here.
+func sudoUpdateAllowed() bool {
+	return exec.Command("sudo", "-n", "-l", updateScriptPath).Run() == nil
+}
+
+// triggerUpdate starts the real update (git pull, rebuild, service
+// restart) as a fully detached background process — detached because this
+// server process itself gets killed partway through, when the script
+// restarts portly-server, and the update must keep running after that.
+func triggerUpdate(dataDir string) error {
+	logPath := filepath.Join(dataDir, "update.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open update log: %w", err)
+	}
+
+	cmd := exec.Command("sudo", "-n", updateScriptPath)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return fmt.Errorf("start update: %w", err)
+	}
+	go func() {
+		cmd.Wait()
+		logFile.Close()
+	}()
+	return nil
+}
 
 var (
 	dataDir        string
@@ -207,6 +254,20 @@ func runCmd() *cobra.Command {
 			apiSrv.OnFactoryReset = func() {
 				writeSetupCode(database, logger, setupCodePath)
 			}
+
+			apiSrv.BuildCommit = buildCommit
+			if sudoUpdateAllowed() {
+				apiSrv.ApplyUpdate = func() error { return triggerUpdate(dataDir) }
+				logger.Info("one-click update is enabled")
+			}
+			apiSrv.SetUpdateStatus(updatecheck.Check(context.Background(), buildCommit))
+			go func() {
+				ticker := time.NewTicker(6 * time.Hour)
+				defer ticker.Stop()
+				for range ticker.C {
+					apiSrv.SetUpdateStatus(updatecheck.Check(context.Background(), buildCommit))
+				}
+			}()
 
 			go func() {
 				if err := apiSrv.Run(apiAddr); err != nil {

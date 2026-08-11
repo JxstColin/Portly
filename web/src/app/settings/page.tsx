@@ -4,9 +4,9 @@ import { FormEvent, Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth-context";
-import { api, ApiError, SetupStatus } from "@/lib/api";
+import { api, ApiError, SetupStatus, UpdateStatus } from "@/lib/api";
 
-type Tab = "account" | "domain";
+type Tab = "account" | "domain" | "updates";
 
 function TabLink({
   tab,
@@ -409,10 +409,174 @@ function DomainTab() {
   );
 }
 
+const updatePollInterval = 5_000;
+const updatePollTimeoutMs = 5 * 60_000;
+
+function shortCommit(sha?: string): string {
+  if (!sha) return "unknown";
+  return sha === "dev" ? "dev build" : sha.slice(0, 7);
+}
+
+function UpdatesTab() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const s = await api.getUpdateStatus();
+      setStatus(s);
+      return s;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onCheckNow() {
+    setError(null);
+    setChecking(true);
+    try {
+      const s = await api.checkUpdate();
+      setStatus(s);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Check failed");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function onApply() {
+    setError(null);
+    setApplying(true);
+    try {
+      const before = status;
+      await api.applyUpdate();
+
+      // The server restarts itself partway through — poll until it comes
+      // back up reporting a different (i.e. now-current) commit, rather
+      // than waiting for this request to "finish" (it never will from the
+      // server's side, since the process handling it gets killed).
+      const deadline = Date.now() + updatePollTimeoutMs;
+      const poll = async (): Promise<void> => {
+        if (Date.now() > deadline) {
+          setError("Update is taking longer than expected — check journalctl -u portly-server on the VPS.");
+          setApplying(false);
+          return;
+        }
+        const s = await load();
+        if (s && (!before || s.current_commit !== before.current_commit)) {
+          setApplying(false);
+          return;
+        }
+        setTimeout(poll, updatePollInterval);
+      };
+      setTimeout(poll, updatePollInterval);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to start update");
+      setApplying(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-xl">
+      <p className="text-sm text-foreground-secondary">
+        Checks GitHub for a newer commit on Portly&apos;s <code className="font-mono">main</code>{" "}
+        branch than the one this server was built from.
+      </p>
+
+      <div className="mt-4 rounded-xl border border-border bg-surface p-6">
+        {!status ? (
+          <p className="text-sm text-foreground-muted">Loading…</p>
+        ) : (
+          <>
+            <div className="text-sm">
+              <span className="text-foreground-secondary">Running: </span>
+              <code className="font-mono">{shortCommit(status.current_commit)}</code>
+            </div>
+            {status.update_available && status.latest_commit && (
+              <div className="mt-1 text-sm">
+                <span className="text-foreground-secondary">Latest: </span>
+                <code className="font-mono">{shortCommit(status.latest_commit)}</code>
+              </div>
+            )}
+            <div className="mt-1 text-xs text-foreground-muted">
+              Last checked {new Date(status.checked_at).toLocaleString()}
+            </div>
+
+            {status.check_error && (
+              <p className="mt-3 text-sm text-[color:var(--status-critical)]">
+                Check failed: {status.check_error}
+              </p>
+            )}
+
+            {status.current_commit === "dev" && (
+              <p className="mt-3 text-xs text-foreground-muted">
+                This is a from-source build with no embedded commit, so there&apos;s nothing to
+                compare against — build via <code className="font-mono">make build</code> to
+                enable update checks.
+              </p>
+            )}
+
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                onClick={onCheckNow}
+                disabled={checking || applying}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary hover:bg-surface-raised disabled:opacity-50"
+              >
+                {checking ? "Checking…" : "Check now"}
+              </button>
+
+              {status.update_available && status.can_apply && (
+                <button
+                  onClick={onApply}
+                  disabled={applying}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+                >
+                  {applying ? "Updating…" : "Update now"}
+                </button>
+              )}
+            </div>
+
+            {applying && (
+              <p className="mt-3 text-sm text-foreground-secondary">
+                Update running — this can take a few minutes. The panel will go
+                briefly unreachable while the server restarts, then this page
+                refreshes automatically.
+              </p>
+            )}
+
+            {status.update_available && !status.can_apply && (
+              <div className="mt-4 rounded-lg border border-border bg-surface-raised p-3 text-xs text-foreground-secondary">
+                One-click update isn&apos;t enabled on this server. Run this on
+                the VPS instead:
+                <code className="mt-2 block break-all rounded bg-surface px-2 py-1.5 font-mono">
+                  {'curl -fsSL "https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/quickstart-vps.sh?$(date +%s)" | sudo bash'}
+                </code>
+                Or re-run it with <code className="font-mono">--enable-update-button</code> once
+                to turn this button on for next time (see the README for what that grants).
+              </div>
+            )}
+
+            {error && (
+              <p className="mt-3 text-sm text-[color:var(--status-critical)]">{error}</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const tab: Tab = searchParams.get("tab") === "domain" ? "domain" : "account";
+  const tabParam = searchParams.get("tab");
+  const tab: Tab = tabParam === "domain" ? "domain" : tabParam === "updates" ? "updates" : "account";
   const firstLogin = searchParams.get("first-login") === "1";
 
   function setTab(next: Tab) {
@@ -430,10 +594,19 @@ function SettingsContent() {
         <TabLink tab="domain" active={tab === "domain"} onClick={setTab}>
           Domain
         </TabLink>
+        <TabLink tab="updates" active={tab === "updates"} onClick={setTab}>
+          Updates
+        </TabLink>
       </div>
 
       <div className="mt-6">
-        {tab === "account" ? <AccountTab firstLogin={firstLogin} /> : <DomainTab />}
+        {tab === "account" ? (
+          <AccountTab firstLogin={firstLogin} />
+        ) : tab === "domain" ? (
+          <DomainTab />
+        ) : (
+          <UpdatesTab />
+        )}
       </div>
     </div>
   );

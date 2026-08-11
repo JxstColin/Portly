@@ -19,6 +19,13 @@
 # new Portly release) — it pulls the latest code, rebuilds both services,
 # and restarts them in place. portly-client machines out in the field
 # update themselves automatically and don't need this re-run for that.
+#
+# --enable-update-button additionally grants the panel's own "Update now"
+# button the ability to trigger this same update process directly, via a
+# narrowly-scoped passwordless sudo rule (see the SUDOERS_FILE section
+# below for exactly what it grants). This is a real, deliberate privilege
+# change — off by default; pass it explicitly to opt in, and
+# --disable-update-button to revoke it again later.
 set -euo pipefail
 
 REPO_URL="https://github.com/JxstColin/Portly.git"
@@ -28,6 +35,9 @@ WEB_PORT=80
 HTTPS_PORT=443
 LOCAL_WEB_PORT=3000
 NODE_MAJOR=20
+ENABLE_UPDATE_BUTTON=0
+DISABLE_UPDATE_BUTTON=0
+SUDOERS_FILE=/etc/sudoers.d/portly-update
 
 log() { echo "[quickstart] $*"; }
 die() { echo "[quickstart] error: $*" >&2; exit 1; }
@@ -37,6 +47,8 @@ while [ $# -gt 0 ]; do
 	--control-port) CONTROL_PORT="$2"; shift 2 ;;
 	--web-port) WEB_PORT="$2"; shift 2 ;;
 	--https-port) HTTPS_PORT="$2"; shift 2 ;;
+	--enable-update-button) ENABLE_UPDATE_BUTTON=1; shift ;;
+	--disable-update-button) DISABLE_UPDATE_BUTTON=1; shift ;;
 	*) die "unknown argument: $1 (host/domain are no longer passed here — set a domain in the web UI once it's running)" ;;
 	esac
 done
@@ -127,12 +139,41 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
+if [ "$DISABLE_UPDATE_BUTTON" -eq 1 ]; then
+	log "revoking one-click update permission..."
+	rm -f "$SUDOERS_FILE"
+fi
+
+if [ "$ENABLE_UPDATE_BUTTON" -eq 1 ]; then
+	if [ "$SRC_DIR" != "$DEFAULT_SRC_DIR" ]; then
+		die "--enable-update-button requires the standard checkout at $DEFAULT_SRC_DIR (portly-server only ever checks for a sudo grant on that exact path) — re-run via the curl one-liner from the README instead of from a custom checkout"
+	fi
+	log "granting the panel permission to trigger updates directly..."
+	# Exactly one command, no arguments, run as root, no password — the
+	# 'portly' user (which the server runs as, unprivileged otherwise) can
+	# only ever run this exact script this exact way, nothing else. The
+	# script itself lives under $SRC_DIR, which 'portly' cannot write to
+	# (only $SRC_DIR/web is chowned to it, for the npm build).
+	SUDOERS_TMP="$(mktemp)"
+	echo "portly ALL=(root) NOPASSWD: ${SRC_DIR}/scripts/quickstart-vps.sh" >"$SUDOERS_TMP"
+	chmod 0440 "$SUDOERS_TMP"
+	if visudo -c -f "$SUDOERS_TMP" >/dev/null 2>&1; then
+		mv "$SUDOERS_TMP" "$SUDOERS_FILE"
+		log "one-click update enabled."
+	else
+		rm -f "$SUDOERS_TMP"
+		log "warning: generated sudoers rule failed validation — one-click update NOT enabled"
+	fi
+fi
+
 systemctl daemon-reload
 systemctl enable portly-server
 # 'enable --now' only starts a service that isn't already running — on a
 # re-run (update) it would silently leave the old binary's process alive
 # in memory even though we just replaced /usr/local/bin/portly-server on
-# disk, so restart explicitly every time instead.
+# disk, so restart explicitly every time instead. This also picks up any
+# --enable-update-button/--disable-update-button change made just above,
+# since portly-server only checks for the sudo grant at startup.
 systemctl restart portly-server
 
 log "building the web UI (this can take a minute)..."
