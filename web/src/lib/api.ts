@@ -83,6 +83,12 @@ export interface TrafficSample {
   bytes_out: number;
 }
 
+export interface Device {
+  ip: string;
+  mac?: string;
+  hostname?: string;
+}
+
 export interface CreateClientResult {
   client: Client;
   install_command: string;
@@ -128,6 +134,8 @@ export const api = {
     }),
   deleteClient: (id: string) =>
     request<void>(`/api/clients/${id}`, { method: "DELETE" }),
+  listDevices: (clientId: string) =>
+    request<Device[]>(`/api/clients/${clientId}/devices`),
 
   listTunnels: (clientId?: string) =>
     request<Tunnel[]>(

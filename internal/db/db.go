@@ -295,6 +295,18 @@ func (d *DB) ListEnabledTunnels() ([]Tunnel, error) {
 		traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at FROM tunnels WHERE enabled = 1 ORDER BY created_at`)
 }
 
+func (d *DB) GetTunnelByID(id string) (Tunnel, error) {
+	tunnels, err := d.queryTunnels(`SELECT id, client_id, name, local_host, local_port, public_port, protocol, enabled,
+		traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at FROM tunnels WHERE id = ?`, id)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	if len(tunnels) == 0 {
+		return Tunnel{}, sql.ErrNoRows
+	}
+	return tunnels[0], nil
+}
+
 func (d *DB) queryTunnels(query string, args ...any) ([]Tunnel, error) {
 	rows, err := d.sql.Query(query, args...)
 	if err != nil {

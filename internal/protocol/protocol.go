@@ -81,6 +81,22 @@ type UDPPacket struct {
 	Data       []byte `json:"data"`
 }
 
+// Device is one host the client discovered on its local network, for the
+// "Add tunnel" UI's local-host suggestions.
+type Device struct {
+	IP       string `json:"ip"`
+	MAC      string `json:"mac,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
+}
+
+// DeviceReport is sent by the client to the server on its own short-lived
+// yamux stream (opened by the client, unlike every other stream in this
+// protocol which the server opens) whenever it refreshes its local network
+// scan. It always carries the client's full current device list.
+type DeviceReport struct {
+	Devices []Device `json:"devices"`
+}
+
 // WriteFrame writes a length-prefixed JSON-encoded message to w.
 func WriteFrame(w io.Writer, v any) error {
 	data, err := json.Marshal(v)

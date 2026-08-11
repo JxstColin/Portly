@@ -41,6 +41,9 @@ type Server struct {
 
 	trafficMu sync.Mutex
 	liveBytes map[string]*liveCounter // tunnel ID -> live in-memory counters
+
+	devicesMu sync.RWMutex
+	devices   map[string][]protocol.Device // client ID -> last reported LAN devices
 }
 
 type clientSession struct {
@@ -77,6 +80,7 @@ func NewServer(database *db.DB, tlsConfig *tls.Config, controlAddr string, logge
 		sessions:    make(map[string]*clientSession),
 		listeners:   make(map[string]*publicListener),
 		liveBytes:   make(map[string]*liveCounter),
+		devices:     make(map[string][]protocol.Device),
 	}
 }
 
@@ -151,6 +155,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	// Unlike every other stream here, which the server opens, device reports
+	// are opened by the client (short-lived, one report per stream) — accept
+	// whatever it sends on this session for as long as it's alive.
+	go s.acceptClientStreams(ySession, client.ID, log)
+
 	cs := &clientSession{
 		clientID:      client.ID,
 		name:          client.Name,
@@ -176,6 +185,37 @@ func (s *Server) handleConn(conn net.Conn) {
 		delete(s.sessions, client.ID)
 	}
 	s.mu.Unlock()
+}
+
+// acceptClientStreams accepts client-opened streams for the lifetime of a
+// session — currently only ever device reports, but kept generic (reading
+// just a DeviceReport frame) rather than assuming that forever.
+func (s *Server) acceptClientStreams(session *yamux.Session, clientID string, log *slog.Logger) {
+	for {
+		stream, err := session.Accept()
+		if err != nil {
+			return // session closed
+		}
+		go func() {
+			defer stream.Close()
+			var report protocol.DeviceReport
+			if err := protocol.ReadFrame(stream, &report); err != nil {
+				log.Warn("read device report failed", "err", err)
+				return
+			}
+			s.devicesMu.Lock()
+			s.devices[clientID] = report.Devices
+			s.devicesMu.Unlock()
+		}()
+	}
+}
+
+// DiscoveredDevices returns the last set of LAN devices clientID reported
+// (nil if it never has), for the "Add tunnel" UI's local-host suggestions.
+func (s *Server) DiscoveredDevices(clientID string) []protocol.Device {
+	s.devicesMu.RLock()
+	defer s.devicesMu.RUnlock()
+	return s.devices[clientID]
 }
 
 // ConnectedClientIDs returns the set of client IDs with a live control-plane
@@ -317,6 +357,27 @@ func (s *Server) reconcileListeners() {
 		}
 		s.listeners[id] = pl
 	}
+}
+
+// ProbePublicPort reports whether a public port is actually bindable right
+// now, by binding it and immediately closing it again. Used to give
+// immediate feedback when a tunnel is created/enabled instead of letting it
+// silently fail 3 seconds later in reconcileListeners with nothing but a log
+// line — e.g. picking a port the VPS's own sshd, portly-server itself, or
+// another process already owns.
+func (s *Server) ProbePublicPort(proto string, port int) error {
+	if proto == string(protocol.ProtocolUDP) {
+		ln, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
+		if err != nil {
+			return err
+		}
+		return ln.Close()
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return err
+	}
+	return ln.Close()
 }
 
 func (s *Server) startTunnelListener(t db.Tunnel) (*publicListener, error) {

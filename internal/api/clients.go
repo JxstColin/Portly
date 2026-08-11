@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jxstcolin/portly/internal/db"
+	"github.com/jxstcolin/portly/internal/protocol"
 )
 
 var clientNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
@@ -82,6 +83,23 @@ func (s *Server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) installCommand(code string) string {
 	return fmt.Sprintf("curl -fsSL '%s/install.sh?code=%s' | sudo bash", s.apiBaseURL(), code)
+}
+
+// handleListClientDevices returns whatever LAN devices this client last
+// reported, for the "Add tunnel" UI's local-host suggestions. Empty (not an
+// error) if it's never reported one yet — e.g. it just connected and hasn't
+// completed its first scan.
+func (s *Server) handleListClientDevices(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.DB.GetClientByID(id); err != nil {
+		writeError(w, http.StatusNotFound, "client not found")
+		return
+	}
+	devices := s.Tunnels.DiscoveredDevices(id)
+	if devices == nil {
+		devices = []protocol.Device{}
+	}
+	writeJSON(w, http.StatusOK, devices)
 }
 
 func (s *Server) handleDeleteClient(w http.ResponseWriter, r *http.Request) {
