@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { AddMachineModal } from "@/components/AddMachineModal";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { StatusDot } from "@/components/StatusDot";
 import { api, Client, SetupStatus } from "@/lib/api";
 
@@ -20,6 +21,7 @@ function DashboardContent() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [reissueClient, setReissueClient] = useState<Client | null>(null);
+  const [deleteClient, setDeleteClient] = useState<Client | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
 
@@ -43,7 +45,6 @@ function DashboardContent() {
   }, []);
 
   async function removeClient(id: string) {
-    if (!confirm("Delete this machine and all its tunnels?")) return;
     await api.deleteClient(id);
     load();
   }
@@ -122,7 +123,7 @@ function DashboardContent() {
                         </button>
                       )}
                       <button
-                        onClick={() => removeClient(c.id)}
+                        onClick={() => setDeleteClient(c)}
                         className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
                       >
                         Delete
@@ -144,6 +145,16 @@ function DashboardContent() {
           onClose={() => setReissueClient(null)}
           onCreated={load}
           reissueFor={reissueClient}
+        />
+      )}
+      {deleteClient && (
+        <ConfirmModal
+          title="Delete machine"
+          message={`Delete "${deleteClient.name}" and all its tunnels? This can't be undone.`}
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => removeClient(deleteClient.id)}
+          onClose={() => setDeleteClient(null)}
         />
       )}
     </div>

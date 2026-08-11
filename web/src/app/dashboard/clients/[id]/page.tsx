@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { StatusDot } from "@/components/StatusDot";
 import { AddTunnelForm } from "@/components/AddTunnelForm";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { TrafficChart } from "@/components/TrafficChart";
 import {
   api,
@@ -35,6 +36,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
   const [showAddTunnel, setShowAddTunnel] = useState(false);
   const [selectedTunnelId, setSelectedTunnelId] = useState<string | null>(null);
   const [samples, setSamples] = useState<TrafficSample[]>([]);
+  const [deleteTunnel, setDeleteTunnel] = useState<Tunnel | null>(null);
 
   const load = useCallback(async () => {
     const [clients, tunnelList] = await Promise.all([
@@ -83,7 +85,6 @@ function ClientDetail({ clientId }: { clientId: string }) {
   }
 
   async function removeTunnel(id: string) {
-    if (!confirm("Delete this tunnel?")) return;
     await api.deleteTunnel(id);
     if (selectedTunnelId === id) setSelectedTunnelId(null);
     load();
@@ -107,21 +108,19 @@ function ClientDetail({ clientId }: { clientId: string }) {
           )}
         </div>
         <button
-          onClick={() => setShowAddTunnel((v) => !v)}
+          onClick={() => setShowAddTunnel(true)}
           className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)]"
         >
-          {showAddTunnel ? "Close" : "Add tunnel"}
+          Add tunnel
         </button>
       </div>
 
       {showAddTunnel && (
-        <div className="mt-4">
-          <AddTunnelForm
-            clientId={clientId}
-            onCreated={load}
-            onClose={() => setShowAddTunnel(false)}
-          />
-        </div>
+        <AddTunnelForm
+          clientId={clientId}
+          onCreated={load}
+          onClose={() => setShowAddTunnel(false)}
+        />
       )}
 
       <div className="mt-6 overflow-hidden rounded-xl border border-border bg-surface">
@@ -187,7 +186,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
                     </td>
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => removeTunnel(t.id)}
+                        onClick={() => setDeleteTunnel(t)}
                         className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
                       >
                         Delete
@@ -208,6 +207,17 @@ function ClientDetail({ clientId }: { clientId: string }) {
           </h2>
           <TrafficChart samples={samples} />
         </div>
+      )}
+
+      {deleteTunnel && (
+        <ConfirmModal
+          title="Delete tunnel"
+          message={`Delete "${deleteTunnel.name}"? This can't be undone.`}
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => removeTunnel(deleteTunnel.id)}
+          onClose={() => setDeleteTunnel(null)}
+        />
       )}
     </div>
   );
