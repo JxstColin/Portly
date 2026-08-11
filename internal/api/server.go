@@ -133,6 +133,7 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/clients", s.requireAuth(s.handleListClients))
 	mux.HandleFunc("POST /api/clients", s.requireAuth(s.handleCreateClient))
 	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuth(s.handleDeleteClient))
+	mux.HandleFunc("GET /api/clients/{id}/devices", s.requireAuth(s.handleListClientDevices))
 
 	mux.HandleFunc("GET /api/tunnels", s.requireAuth(s.handleListTunnels))
 	mux.HandleFunc("POST /api/tunnels", s.requireAuth(s.handleCreateTunnel))

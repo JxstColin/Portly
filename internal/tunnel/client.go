@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/jxstcolin/portly/internal/lanscan"
 	"github.com/jxstcolin/portly/internal/protocol"
 	"github.com/jxstcolin/portly/internal/tlsutil"
 )
@@ -19,6 +20,10 @@ const (
 	dialTimeout = 10 * time.Second
 	minBackoff  = 1 * time.Second
 	maxBackoff  = 30 * time.Second
+
+	deviceScanFirstDelay = 5 * time.Second
+	deviceScanInterval   = 5 * time.Minute
+	deviceScanTimeout    = 20 * time.Second
 )
 
 // ErrUninstalled is returned by Run when the server told this client its
@@ -140,6 +145,10 @@ func (c *Client) runOnce(ctx context.Context) error {
 		errCh <- c.acceptDataStreams(session)
 	}()
 
+	deviceCtx, cancelDeviceLoop := context.WithCancel(ctx)
+	defer cancelDeviceLoop()
+	go c.reportDevicesLoop(deviceCtx, session)
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -178,6 +187,51 @@ func (c *Client) readControlStream(stream net.Conn) error {
 
 		c.Log.Info("tunnel config updated", "count", len(next))
 	}
+}
+
+// reportDevicesLoop periodically scans the local network and reports what
+// it found to the server, so the "Add tunnel" UI can suggest local hosts
+// instead of the admin having to know this machine's LAN by heart. Runs
+// until ctx is cancelled (i.e. for the lifetime of this session).
+func (c *Client) reportDevicesLoop(ctx context.Context, session *yamux.Session) {
+	timer := time.NewTimer(deviceScanFirstDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		c.scanAndReportDevices(ctx, session)
+		timer.Reset(deviceScanInterval)
+	}
+}
+
+func (c *Client) scanAndReportDevices(ctx context.Context, session *yamux.Session) {
+	scanCtx, cancel := context.WithTimeout(ctx, deviceScanTimeout)
+	found, err := lanscan.Scan(scanCtx)
+	cancel()
+	if err != nil {
+		c.Log.Warn("lan scan failed", "err", err)
+		return
+	}
+
+	report := protocol.DeviceReport{Devices: make([]protocol.Device, len(found))}
+	for i, d := range found {
+		report.Devices[i] = protocol.Device{IP: d.IP, MAC: d.MAC, Hostname: d.Hostname}
+	}
+
+	stream, err := session.Open()
+	if err != nil {
+		c.Log.Warn("open device report stream failed", "err", err)
+		return
+	}
+	defer stream.Close()
+	if err := protocol.WriteFrame(stream, report); err != nil {
+		c.Log.Warn("send device report failed", "err", err)
+		return
+	}
+	c.Log.Info("reported LAN devices", "count", len(found))
 }
 
 func (c *Client) acceptDataStreams(session *yamux.Session) error {

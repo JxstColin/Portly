@@ -1,7 +1,10 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { api, ApiError, TunnelProtocol } from "@/lib/api";
+import { FormEvent, useEffect, useState } from "react";
+import { api, ApiError, Device, TunnelProtocol } from "@/lib/api";
+import { Combobox, ComboboxOption, Select } from "@/components/Dropdown";
+
+const devicePollInterval = 15_000;
 
 export function AddTunnelForm({
   clientId,
@@ -14,11 +17,44 @@ export function AddTunnelForm({
 }) {
   const [name, setName] = useState("");
   const [protocol, setProtocol] = useState<TunnelProtocol>("tcp");
-  const [localHost, setLocalHost] = useState("127.0.0.1");
+  // Starts empty rather than pre-filled with "127.0.0.1" so the Local host
+  // combobox shows every suggestion up front instead of immediately
+  // filtering them down to whatever matches the default value. The
+  // placeholder communicates the default; submit and the backend both
+  // still fall back to 127.0.0.1 if this is left blank.
+  const [localHost, setLocalHost] = useState("");
   const [localPort, setLocalPort] = useState("");
   const [publicPort, setPublicPort] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [devices, setDevices] = useState<Device[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const d = await api.listDevices(clientId);
+        if (!cancelled) setDevices(d);
+      } catch {
+        // transient — next poll will retry
+      }
+    }
+    load();
+    const interval = setInterval(load, devicePollInterval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [clientId]);
+
+  const localHostOptions: ComboboxOption[] = [
+    { value: "127.0.0.1", label: "localhost", sublabel: "127.0.0.1" },
+    ...devices.map((d) => ({
+      value: d.ip,
+      label: d.hostname || d.ip,
+      sublabel: d.hostname ? d.ip : d.mac,
+    })),
+  ];
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -59,21 +95,22 @@ export function AddTunnelForm({
         </div>
         <div>
           <label className="block text-xs font-medium mb-1 text-foreground-secondary">Protocol</label>
-          <select
-            className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+          <Select
             value={protocol}
-            onChange={(e) => setProtocol(e.target.value as TunnelProtocol)}
-          >
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
+            onChange={setProtocol}
+            options={[
+              { value: "tcp", label: "TCP" },
+              { value: "udp", label: "UDP" },
+            ]}
+          />
         </div>
         <div>
           <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local host</label>
-          <input
-            className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+          <Combobox
             value={localHost}
-            onChange={(e) => setLocalHost(e.target.value)}
+            onChange={setLocalHost}
+            options={localHostOptions}
+            placeholder="127.0.0.1"
           />
         </div>
         <div>

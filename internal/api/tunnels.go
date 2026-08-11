@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -110,6 +111,11 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		req.Name = req.LocalHost
 	}
 
+	if err := s.Tunnels.ProbePublicPort(req.Protocol, req.PublicPort); err != nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", req.PublicPort, err))
+		return
+	}
+
 	t, err := s.DB.CreateTunnel(req.ClientID, req.Name, req.LocalHost, req.LocalPort, req.PublicPort, req.Protocol)
 	if err != nil {
 		writeError(w, http.StatusConflict, "public_port is already in use by another tunnel")
@@ -133,6 +139,17 @@ func (s *Server) handleUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled == nil {
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
+	}
+	if *req.Enabled {
+		t, err := s.DB.GetTunnelByID(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "tunnel not found")
+			return
+		}
+		if err := s.Tunnels.ProbePublicPort(t.Protocol, t.PublicPort); err != nil {
+			writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", t.PublicPort, err))
+			return
+		}
 	}
 	if err := s.DB.SetTunnelEnabled(id, *req.Enabled); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
