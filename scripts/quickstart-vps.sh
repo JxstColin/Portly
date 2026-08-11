@@ -74,7 +74,14 @@ else
 	SRC_DIR="$DEFAULT_SRC_DIR"
 	if [ -d "$SRC_DIR/.git" ]; then
 		log "updating existing checkout at $SRC_DIR..."
-		git -C "$SRC_DIR" pull --ff-only
+		# This checkout is entirely script-managed (nobody hand-edits
+		# /opt/portly-src), so hard-reset to whatever origin/main currently
+		# is rather than 'pull --ff-only' — that fails outright the moment
+		# histories diverge for any reason (e.g. the upstream repo's history
+		# was ever rewritten/force-pushed), permanently breaking the update
+		# path until someone deletes the checkout by hand.
+		git -C "$SRC_DIR" fetch --depth 1 origin main
+		git -C "$SRC_DIR" reset --hard FETCH_HEAD
 	else
 		log "cloning $REPO_URL into $SRC_DIR..."
 		git clone --depth 1 "$REPO_URL" "$SRC_DIR"
