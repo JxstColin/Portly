@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
 
 CREATE INDEX IF NOT EXISTS idx_traffic_samples_tunnel_ts ON traffic_samples(tunnel_id, ts);
 
+-- Small key-value store for server-wide settings that need to survive a
+-- restart (currently just the admin-configured public domain).
+CREATE TABLE IF NOT EXISTS server_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
 -- Tokens of deleted clients, so a machine that's still out there (offline
 -- when it was removed in the UI) gets told to uninstall itself the next
 -- time it tries to reconnect, instead of just being rejected forever.

@@ -429,6 +429,28 @@ func randomCode(n int) (string, error) {
 	return string(b), nil
 }
 
+// --- Server settings (key-value) ---
+
+func (d *DB) GetSetting(key string) (value string, ok bool, err error) {
+	err = d.sql.QueryRow(`SELECT value FROM server_settings WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+func (d *DB) SetSetting(key, value string) error {
+	_, err := d.sql.Exec(
+		`INSERT INTO server_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
+	)
+	return err
+}
+
 // --- Traffic samples ---
 
 type TrafficSample struct {

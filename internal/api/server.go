@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"sync"
 	"time"
 
@@ -34,8 +36,31 @@ type Server struct {
 	AllowedOrigins []string
 	ClientBinaries map[string][]byte // "linux-amd64" etc -> raw portly-client binary
 
+	// WebUpstream, if set, is where non-API requests get reverse-proxied
+	// (the Next.js UI process, e.g. "http://127.0.0.1:3000") so the browser
+	// only ever talks to one origin — no CORS, no baked-in API base URL.
+	WebUpstream string
+	// PublicHTTPPort/PublicHTTPSPort are the ports end users actually hit,
+	// used to build install links and other absolute URLs. 0 (or the
+	// standard 80/443) is omitted from generated URLs.
+	PublicHTTPPort  int
+	PublicHTTPSPort int
+
+	// OnDomainSet, if set by main.go (which owns the autocert.Manager), is
+	// called after a new domain is persisted so it can kick off Let's
+	// Encrypt certificate issuance and report progress back via
+	// SetCertState. Runs in its own goroutine; may block.
+	OnDomainSet func(domain string)
+
 	sessMu   sync.Mutex
 	sessions map[string]sessionInfo
+
+	domainMu sync.RWMutex
+	domain   string
+
+	certMu    sync.RWMutex
+	certState string // "", "pending", "ready", "error"
+	certErr   string
 }
 
 type sessionInfo struct {
@@ -47,13 +72,46 @@ func NewServer(database *db.DB, tunnels *tunnel.Server, logger *slog.Logger) *Se
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{
+	s := &Server{
 		DB:             database,
 		Tunnels:        tunnels,
 		Log:            logger,
 		ClientBinaries: make(map[string][]byte),
 		sessions:       make(map[string]sessionInfo),
 	}
+	if d, ok, err := database.GetSetting("domain"); err == nil && ok {
+		s.domain = d
+	}
+	return s
+}
+
+// Domain returns the currently configured public domain, or "" if none has
+// been set yet (the panel is only reachable by IP so far).
+func (s *Server) Domain() string {
+	s.domainMu.RLock()
+	defer s.domainMu.RUnlock()
+	return s.domain
+}
+
+func (s *Server) setDomain(d string) {
+	s.domainMu.Lock()
+	s.domain = d
+	s.domainMu.Unlock()
+}
+
+// SetCertState is called by main.go's autocert integration to report
+// certificate issuance progress ("pending", "ready", "error") back to the
+// setup API.
+func (s *Server) SetCertState(state, errMsg string) {
+	s.certMu.Lock()
+	s.certState, s.certErr = state, errMsg
+	s.certMu.Unlock()
+}
+
+func (s *Server) getCertState() (state, errMsg string) {
+	s.certMu.RLock()
+	defer s.certMu.RUnlock()
+	return s.certState, s.certErr
 }
 
 func (s *Server) Router() http.Handler {
@@ -81,6 +139,17 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /install.sh", s.handleInstallScript)
 	mux.HandleFunc("GET /downloads/{osarch}", s.handleDownloadClient)
 	mux.HandleFunc("POST /api/enroll/exchange", s.handleEnrollExchange)
+
+	mux.HandleFunc("GET /api/setup", s.requireAuth(s.handleSetupStatus))
+	mux.HandleFunc("POST /api/setup/domain", s.requireAuth(s.handleSetDomain))
+
+	if s.WebUpstream != "" {
+		if target, err := url.Parse(s.WebUpstream); err == nil {
+			mux.Handle("/", httputil.NewSingleHostReverseProxy(target))
+		} else {
+			s.Log.Error("invalid web upstream URL, UI won't be reachable through this server", "web_upstream", s.WebUpstream, "err", err)
+		}
+	}
 
 	return s.withCORS(mux)
 }
@@ -185,6 +254,18 @@ func readJSON(r *http.Request, v any) error {
 	return nil
 }
 
+// apiBaseURL is the origin end users and install scripts should hit: the
+// configured domain over HTTPS if one is set, otherwise the advertised IP
+// over plain HTTP — omitting the port whenever it's the standard 80/443.
 func (s *Server) apiBaseURL() string {
-	return fmt.Sprintf("http://%s:%d", s.AdvertiseHost, s.APIPort)
+	if d := s.Domain(); d != "" {
+		if s.PublicHTTPSPort != 0 && s.PublicHTTPSPort != 443 {
+			return fmt.Sprintf("https://%s:%d", d, s.PublicHTTPSPort)
+		}
+		return "https://" + d
+	}
+	if s.PublicHTTPPort != 0 && s.PublicHTTPPort != 80 {
+		return fmt.Sprintf("http://%s:%d", s.AdvertiseHost, s.PublicHTTPPort)
+	}
+	return fmt.Sprintf("http://%s", s.AdvertiseHost)
 }
