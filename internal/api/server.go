@@ -36,6 +36,10 @@ type Server struct {
 	CAFingerprint   string
 	AllowedOrigins  []string
 	ClientBinaries  map[string][]byte // "linux-amd64" etc -> raw portly-client binary
+	// ClientBinarySHA256 mirrors ClientBinaries, keyed the same way, so
+	// already-installed clients can poll a cheap hash instead of
+	// downloading the full binary to check whether it's out of date.
+	ClientBinarySHA256 map[string]string
 
 	// WebUpstream, if set, is where non-API requests get reverse-proxied
 	// (the Next.js UI process, e.g. "http://127.0.0.1:3000") so the browser
@@ -74,11 +78,12 @@ func NewServer(database *db.DB, tunnels *tunnel.Server, logger *slog.Logger) *Se
 		logger = slog.Default()
 	}
 	s := &Server{
-		DB:             database,
-		Tunnels:        tunnels,
-		Log:            logger,
-		ClientBinaries: make(map[string][]byte),
-		sessions:       make(map[string]sessionInfo),
+		DB:                 database,
+		Tunnels:            tunnels,
+		Log:                logger,
+		ClientBinaries:     make(map[string][]byte),
+		ClientBinarySHA256: make(map[string]string),
+		sessions:           make(map[string]sessionInfo),
 	}
 	if d, ok, err := database.GetSetting("domain"); err == nil && ok {
 		s.domain = d
@@ -139,6 +144,7 @@ func (s *Server) Router() http.Handler {
 
 	mux.HandleFunc("GET /install.sh", s.handleInstallScript)
 	mux.HandleFunc("GET /downloads/{osarch}", s.handleDownloadClient)
+	mux.HandleFunc("GET /downloads/{osarch}/sha256", s.handleDownloadClientChecksum)
 	mux.HandleFunc("POST /api/enroll/exchange", s.handleEnrollExchange)
 
 	mux.HandleFunc("GET /api/setup", s.requireAuth(s.handleSetupStatus))

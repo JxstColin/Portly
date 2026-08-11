@@ -15,6 +15,11 @@ type ClientConfig struct {
 	ServerAddr    string `yaml:"server_addr"`
 	Token         string `yaml:"token"`
 	CAFingerprint string `yaml:"ca_fingerprint"`
+	// APIBase is the server's HTTP(S) base URL (e.g. "https://panel.example.com"),
+	// used only for self-update checks — not required for tunnel operation, so
+	// configs written before this field existed simply have self-update disabled
+	// until re-enrolled. Empty for configs written via 'portly-client init'.
+	APIBase string `yaml:"api_base,omitempty"`
 }
 
 func LoadClientConfig(path string) (*ClientConfig, error) {

@@ -117,6 +117,34 @@ port (on that machine) to a public port (on the VPS) — e.g. local `25565` →
 public `25565` for Minecraft. It goes live immediately; the running client
 picks it up automatically.
 
+## Updating
+
+**VPS (`portly-server` + web UI):** re-run the exact same one-liner from
+step 1 — it's also the update command:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/quickstart-vps.sh?$(date +%s)" | sudo bash
+```
+
+It pulls the latest code, rebuilds `portly-server` and the web UI, and
+restarts both services in place. Already-cloned the repo? `git pull &&
+sudo ./scripts/quickstart-vps.sh` from its root does the same thing
+without going through GitHub's raw-content CDN.
+
+**Machines (`portly-client`):** nothing to do — every enrolled machine
+checks the VPS for a newer client binary roughly every 15 minutes (with a
+random startup delay so a whole fleet doesn't hit the server at once), and
+if the one embedded in your updated `portly-server` differs, it downloads
+it, verifies its checksum, swaps it in atomically, and restarts itself
+into it — no reinstall, no downtime beyond a brief reconnect. This means
+that after you update the VPS, every machine picks up client-side fixes
+on its own within about 15 minutes.
+
+Machines enrolled before this feature shipped don't have the update
+checker wired up yet (their config predates it) — re-run their install
+command once (**Add machine** → same machine name is fine, it just
+re-enrolls) and they'll self-update automatically from then on.
+
 ## CLI-only path (no web UI)
 
 Everything above is also available from the CLI, useful for scripting or if
@@ -239,6 +267,13 @@ all of this in one step.
 - Public tunnel ports currently have no range restriction; pick ports that
   don't collide with the control-plane/web/HTTPS ports or other services
   on the VPS.
+- `portly-client`'s self-update checks/downloads go over the same
+  `api_base` URL it enrolled through (HTTPS once you've set a domain, plain
+  HTTP otherwise) and verify the downloaded binary's sha256 against the
+  hash the server itself reports — this catches corruption/partial
+  downloads, but trusts whatever `portly-server` is currently serving,
+  same as the initial install script does. There's no separate release
+  signing step.
 
 ## Project layout
 

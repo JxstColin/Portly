@@ -144,6 +144,7 @@ func runCmd() *cobra.Command {
 			apiSrv.CAFingerprint = fingerprint
 			apiSrv.AllowedOrigins = allowedOrigins
 			apiSrv.ClientBinaries = clientBins
+			apiSrv.ClientBinarySHA256 = api.ChecksumClientBinaries(clientBins)
 			apiSrv.WebUpstream = webUpstream
 			apiSrv.PublicHTTPPort = mustPort(webAddr)
 			apiSrv.PublicHTTPSPort = mustPort(httpsAddr)

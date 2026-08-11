@@ -15,8 +15,10 @@
 # Or, if you've already cloned the repo:
 #   sudo ./scripts/quickstart-vps.sh
 #
-# Safe to re-run — it reuses the existing checkout and (re)builds/updates
-# both services in place.
+# This is also the update command: safe to re-run any time (e.g. after a
+# new Portly release) — it pulls the latest code, rebuilds both services,
+# and restarts them in place. portly-client machines out in the field
+# update themselves automatically and don't need this re-run for that.
 set -euo pipefail
 
 REPO_URL="https://github.com/JxstColin/Portly.git"
@@ -119,7 +121,12 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now portly-server
+systemctl enable portly-server
+# 'enable --now' only starts a service that isn't already running — on a
+# re-run (update) it would silently leave the old binary's process alive
+# in memory even though we just replaced /usr/local/bin/portly-server on
+# disk, so restart explicitly every time instead.
+systemctl restart portly-server
 
 log "building the web UI (this can take a minute)..."
 # No NEXT_PUBLIC_API_BASE needed: portly-server reverse-proxies the UI onto
@@ -152,7 +159,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now portly-web
+systemctl enable portly-web
+systemctl restart portly-web
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
 	log "opening firewall ports ${CONTROL_PORT}, ${WEB_PORT}, and ${HTTPS_PORT} via ufw..."
