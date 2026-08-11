@@ -29,20 +29,36 @@ esac
 BASE="%[1]s"
 CODE="%[2]s"
 
-# Download to a temp file in the same directory as the target, then rename
-# into place. A running portly-client keeps its old binary mapped even
-# after this replaces the directory entry, so re-running the installer
-# (e.g. to rotate a machine's credentials) never fails trying to overwrite
-# an in-use executable.
+# Download to a temp file rather than overwriting the installed binary
+# directly — the not-yet-installed copy is what actually performs
+# enrollment below, so if the code turns out to be invalid or expired, an
+# already-running install is never touched: nothing gets stopped, and
+# nothing gets swapped in, until enrollment has actually succeeded.
 echo "Downloading portly-client for ${OS}/${ARCH}..."
 TMP_BIN="$(mktemp /usr/local/bin/portly-client.XXXXXX)"
 curl -fsSL -o "${TMP_BIN}" "${BASE}/downloads/${OS}-${ARCH}"
 chmod +x "${TMP_BIN}"
-systemctl stop portly-client 2>/dev/null || true
-mv -f "${TMP_BIN}" /usr/local/bin/portly-client
 
 echo "Enrolling with ${BASE}..."
-exec /usr/local/bin/portly-client enroll --api "${BASE}" --code "${CODE}"
+"${TMP_BIN}" enroll --api "${BASE}" --code "${CODE}" --no-start
+
+# Only reached once enrollment actually succeeded (set -e stops the script
+# above otherwise). A running process — whether the background process
+# 'enroll' just started itself (no systemd), or a previous install's still
+# running under systemd — keeps its old binary mapped even after this
+# replaces the directory entry, so this rename never fails trying to
+# overwrite an in-use executable.
+mv -f "${TMP_BIN}" /usr/local/bin/portly-client
+
+# Only relevant when 'enroll' installed a systemd unit above (--no-start
+# still wrote and enabled it, just didn't start it) — on a system without
+# systemd, enroll already started the client itself as a background
+# process, so there's nothing left to do here. 'restart' cleanly starts it
+# fresh either way: whether it was already running (rotating credentials)
+# or this is a brand new install (never started before).
+if [ -d /run/systemd/system ]; then
+  systemctl restart portly-client
+fi
 `
 
 func (s *Server) handleInstallScript(w http.ResponseWriter, r *http.Request) {
