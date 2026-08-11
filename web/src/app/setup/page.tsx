@@ -89,15 +89,30 @@ function SetupContent() {
 
       <div className="mt-6 rounded-xl border border-border bg-surface p-6">
         <div className="text-sm">
-          <span className="text-foreground-secondary">Detected public IP: </span>
+          <span className="text-foreground-secondary">Detected public IPv4: </span>
           <code className="font-mono">{status?.public_ip ?? "…"}</code>
         </div>
+        {status?.public_ipv6 && (
+          <div className="mt-1 text-sm">
+            <span className="text-foreground-secondary">Detected public IPv6: </span>
+            <code className="font-mono">{status.public_ipv6}</code>
+          </div>
+        )}
 
         <div className="mt-4 rounded-lg border border-border bg-surface-raised p-3 text-xs text-foreground-secondary">
-          Create an A record (and AAAA if you have an IPv6 address) for your
-          domain pointing at <code className="font-mono">{status?.public_ip ?? "this IP"}</code>{" "}
-          before submitting it below — Portly requests the certificate
-          immediately, and it&apos;ll only succeed once that DNS record resolves.
+          Create an <strong>A</strong> record for your domain pointing at{" "}
+          <code className="font-mono">{status?.public_ip ?? "the IPv4 address above"}</code> —
+          that&apos;s the one that matters, since not every machine you&apos;ll install
+          Portly&apos;s client on has IPv6.
+          {status?.public_ipv6 && (
+            <>
+              {" "}Optionally also add an <strong>AAAA</strong> record pointing at{" "}
+              <code className="font-mono">{status.public_ipv6}</code> if you want IPv6
+              reachability too.
+            </>
+          )}{" "}
+          Portly requests the certificate immediately after you submit, and
+          it&apos;ll only succeed once DNS resolves.
         </div>
 
         <form onSubmit={onSubmit} className="mt-4">

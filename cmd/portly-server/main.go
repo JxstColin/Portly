@@ -136,6 +136,9 @@ func runCmd() *cobra.Command {
 
 			apiSrv := api.NewServer(database, srv, logger)
 			apiSrv.AdvertiseHost = firstNonEmpty(hosts, "localhost")
+			if ip6, err := netutil.DetectPublicIPv6(context.Background()); err == nil {
+				apiSrv.AdvertiseHostV6 = ip6
+			}
 			apiSrv.ControlPort = mustPort(controlAddr)
 			apiSrv.APIPort = mustPort(apiAddr)
 			apiSrv.CAFingerprint = fingerprint
