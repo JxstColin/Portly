@@ -1,0 +1,18 @@
+[Unit]
+Description=Portly web UI (internal — reverse-proxied by portly-server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=portly
+Group=portly
+WorkingDirectory=/opt/portly-src/web
+ExecStart=/opt/portly-src/web/node_modules/.bin/next start -H 127.0.0.1 -p 3000
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

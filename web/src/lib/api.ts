@@ -1,5 +1,10 @@
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
+// Empty by default: in production the UI is reverse-proxied by
+// portly-server onto its own origin, so relative requests already land on
+// the right place — no build-time coupling to a host/port, which matters
+// because the domain can change (via the in-app Setup page) without a
+// rebuild. Set NEXT_PUBLIC_API_BASE only for local dev, where `next dev`
+// on :3000 talks directly to a portly-server on a different port.
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
 export class ApiError extends Error {
   status: number;
@@ -85,6 +90,16 @@ export interface CreateClientResult {
   expires_at: number;
 }
 
+export type CertState = "" | "pending" | "ready" | "error";
+
+export interface SetupStatus {
+  public_ip: string;
+  control_port: number;
+  domain?: string;
+  cert_state?: CertState;
+  cert_error?: string;
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<Me>("/api/auth/login", {
@@ -139,6 +154,13 @@ export const api = {
 
   tunnelTraffic: (id: string, sinceUnix: number) =>
     request<TrafficSample[]>(`/api/tunnels/${id}/traffic?since=${sinceUnix}`),
+
+  getSetup: () => request<SetupStatus>("/api/setup"),
+  setDomain: (domain: string) =>
+    request<{ domain: string }>("/api/setup/domain", {
+      method: "POST",
+      body: JSON.stringify({ domain }),
+    }),
 };
 
 export interface LiveTunnelStat {
@@ -159,11 +181,16 @@ export interface LiveTick {
   tunnels: LiveTunnelStat[];
 }
 
+function wsBaseURL(): string {
+  if (API_BASE) return API_BASE.replace(/^http/, "ws");
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}`;
+}
+
 export function connectLiveWS(
   onTick: (tick: LiveTick) => void
 ): () => void {
-  const wsBase = API_BASE.replace(/^http/, "ws");
-  const ws = new WebSocket(`${wsBase}/api/ws/live`);
+  const ws = new WebSocket(`${wsBaseURL()}/api/ws/live`);
   ws.onmessage = (ev) => {
     try {
       const data = JSON.parse(ev.data);

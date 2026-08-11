@@ -56,6 +56,7 @@ export function AppShell({
             <span className="text-base font-semibold tracking-tight">Portly</span>
             <nav className="flex items-center gap-1">
               {navItem("/dashboard", "Dashboard")}
+              {navItem("/setup", "Setup")}
               {navItem("/account", "Account")}
             </nav>
           </div>

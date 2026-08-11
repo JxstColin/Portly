@@ -4,17 +4,21 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/jxstcolin/portly/internal/api"
 	"github.com/jxstcolin/portly/internal/db"
+	"github.com/jxstcolin/portly/internal/netutil"
 	"github.com/jxstcolin/portly/internal/tlsutil"
 	"github.com/jxstcolin/portly/internal/tunnel"
 )
@@ -23,6 +27,9 @@ var (
 	dataDir        string
 	controlAddr    string
 	apiAddr        string
+	webAddr        string
+	httpsAddr      string
+	webUpstream    string
 	advertiseHost  []string
 	allowedOrigins []string
 )
@@ -34,9 +41,12 @@ func main() {
 	}
 	root.PersistentFlags().StringVar(&dataDir, "data-dir", "/var/lib/portly", "directory for the SQLite DB and TLS certs")
 	root.PersistentFlags().StringVar(&controlAddr, "control-addr", ":7000", "address the control-plane (tunnel clients) listens on")
-	root.PersistentFlags().StringVar(&apiAddr, "api-addr", ":8080", "address the management API (used by the web UI and 'Add machine' installer) listens on")
-	root.PersistentFlags().StringSliceVar(&advertiseHost, "advertise-host", []string{"localhost", "127.0.0.1"}, "hostnames/IPs to embed in the server TLS certificate (e.g. your VPS public IP or domain)")
-	root.PersistentFlags().StringSliceVar(&allowedOrigins, "allowed-origin", []string{"http://localhost:3000"}, "origins allowed to call the API with credentials (add your web UI's origin)")
+	root.PersistentFlags().StringVar(&apiAddr, "api-addr", ":8080", "address a direct (CORS-enabled) API listener, mainly for local development")
+	root.PersistentFlags().StringVar(&webAddr, "web-addr", ":80", "public address serving the API, installer, and (reverse-proxied) web UI on one origin; also handles Let's Encrypt HTTP-01 challenges")
+	root.PersistentFlags().StringVar(&httpsAddr, "https-addr", ":443", "public HTTPS address, active once a domain is configured in the web UI")
+	root.PersistentFlags().StringVar(&webUpstream, "web-upstream", "http://127.0.0.1:3000", "where to reverse-proxy non-API requests (the Next.js UI process)")
+	root.PersistentFlags().StringSliceVar(&advertiseHost, "advertise-host", nil, "hostnames/IPs to embed in the server TLS certificate and use in install links (default: auto-detect this machine's public IP)")
+	root.PersistentFlags().StringSliceVar(&allowedOrigins, "allowed-origin", []string{"http://localhost:3000"}, "origins allowed to call --api-addr with credentials (dev only — --web-addr is same-origin and needs none)")
 
 	root.AddCommand(runCmd(), clientCmd(), tunnelCmd())
 
@@ -44,6 +54,44 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// resolveAdvertiseHosts returns --advertise-host as given, or auto-detects
+// this machine's public IP if the flag was left unset — so a fresh install
+// works without the operator having to look up and type in their VPS's
+// address by hand. localhost/127.0.0.1 are always added to the TLS
+// certificate's SAN list on top of whatever's returned here, so local
+// testing keeps working regardless.
+func resolveAdvertiseHosts(logger *slog.Logger) []string {
+	if len(advertiseHost) > 0 {
+		return advertiseHost
+	}
+	ip, err := netutil.DetectPublicIP()
+	if err != nil {
+		logger.Warn("could not auto-detect public IP, falling back to localhost — pass --advertise-host to set it explicitly", "err", err)
+		return []string{"localhost"}
+	}
+	logger.Info("auto-detected public IP", "ip", ip)
+	return []string{ip}
+}
+
+func certHostsFor(hosts []string) []string {
+	out := append([]string{}, hosts...)
+	for _, h := range []string{"localhost", "127.0.0.1"} {
+		if !containsString(out, h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func containsString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 func openDB() (*db.DB, error) {
@@ -66,7 +114,9 @@ func runCmd() *cobra.Command {
 			}
 			defer database.Close()
 
-			cert, fingerprint, err := tlsutil.EnsureServerCert(dataDir, advertiseHost)
+			hosts := resolveAdvertiseHosts(logger)
+
+			cert, fingerprint, err := tlsutil.EnsureServerCert(dataDir, certHostsFor(hosts))
 			if err != nil {
 				return fmt.Errorf("ensure server cert: %w", err)
 			}
@@ -85,16 +135,67 @@ func runCmd() *cobra.Command {
 			}
 
 			apiSrv := api.NewServer(database, srv, logger)
-			apiSrv.AdvertiseHost = firstNonEmpty(advertiseHost, "localhost")
+			apiSrv.AdvertiseHost = firstNonEmpty(hosts, "localhost")
 			apiSrv.ControlPort = mustPort(controlAddr)
 			apiSrv.APIPort = mustPort(apiAddr)
 			apiSrv.CAFingerprint = fingerprint
 			apiSrv.AllowedOrigins = allowedOrigins
 			apiSrv.ClientBinaries = clientBins
+			apiSrv.WebUpstream = webUpstream
+			apiSrv.PublicHTTPPort = mustPort(webAddr)
+			apiSrv.PublicHTTPSPort = mustPort(httpsAddr)
+
+			certManager := &autocert.Manager{
+				Prompt: autocert.AcceptTOS,
+				Cache:  autocert.DirCache(filepath.Join(dataDir, "certs")),
+				HostPolicy: func(ctx context.Context, host string) error {
+					if d := apiSrv.Domain(); d != "" && host == d {
+						return nil
+					}
+					return fmt.Errorf("host %q is not the domain configured in the Portly UI", host)
+				},
+			}
+
+			fetchCert := func(domain string) {
+				logger.Info("requesting Let's Encrypt certificate", "domain", domain)
+				_, err := certManager.GetCertificate(&tls.ClientHelloInfo{ServerName: domain})
+				if err != nil {
+					logger.Error("certificate issuance failed", "domain", domain, "err", err)
+					apiSrv.SetCertState("error", err.Error())
+					return
+				}
+				logger.Info("certificate ready", "domain", domain)
+				apiSrv.SetCertState("ready", "")
+			}
+			apiSrv.OnDomainSet = fetchCert
+			if d := apiSrv.Domain(); d != "" {
+				apiSrv.SetCertState("pending", "")
+				go fetchCert(d)
+			}
 
 			go func() {
 				if err := apiSrv.Run(apiAddr); err != nil {
 					logger.Error("api server stopped", "err", err)
+				}
+			}()
+
+			go func() {
+				logger.Info("public web listener (API + UI + ACME challenges)", "addr", webAddr)
+				handler := certManager.HTTPHandler(apiSrv.Router())
+				if err := http.ListenAndServe(webAddr, handler); err != nil {
+					logger.Error("public web listener stopped", "err", err)
+				}
+			}()
+
+			go func() {
+				httpsSrv := &http.Server{
+					Addr:      httpsAddr,
+					Handler:   apiSrv.Router(),
+					TLSConfig: certManager.TLSConfig(),
+				}
+				logger.Info("public HTTPS listener starting (serves once a domain is configured)", "addr", httpsAddr)
+				if err := httpsSrv.ListenAndServeTLS("", ""); err != nil {
+					logger.Error("public HTTPS listener stopped", "err", err)
 				}
 			}()
 
@@ -115,13 +216,16 @@ func clientAddCmd() *cobra.Command {
 		Short: "Register a new client and print its connection token",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
 			database, err := openDB()
 			if err != nil {
 				return err
 			}
 			defer database.Close()
 
-			_, fingerprint, err := tlsutil.EnsureServerCert(dataDir, advertiseHost)
+			hosts := resolveAdvertiseHosts(logger)
+			_, fingerprint, err := tlsutil.EnsureServerCert(dataDir, certHostsFor(hosts))
 			if err != nil {
 				return err
 			}
@@ -133,7 +237,7 @@ func clientAddCmd() *cobra.Command {
 
 			fmt.Printf("Client %q created (id=%s)\n\n", client.Name, client.ID)
 			fmt.Println("portly-client.yaml:")
-			fmt.Printf("  server_addr: \"%s\"\n", firstNonEmpty(advertiseHost, "YOUR_VPS_HOST")+controlAddrPortSuffix())
+			fmt.Printf("  server_addr: \"%s\"\n", firstNonEmpty(hosts, "YOUR_VPS_HOST")+controlAddrPortSuffix())
 			fmt.Printf("  token: \"%s\"\n", token)
 			fmt.Printf("  ca_fingerprint: \"%s\"\n", fingerprint)
 			fmt.Println("\n(Token is shown once — store it now.)")
