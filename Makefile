@@ -1,6 +1,12 @@
 BIN_DIR := bin
 CLIENTBINS_DIR := internal/api/clientbins
 
+# Embedded in portly-server so it can tell the panel when a newer commit
+# exists on GitHub. "dev" (e.g. a shallow/dirty checkout with no git repo
+# at all) deliberately disables the update checker rather than comparing
+# against something meaningless.
+GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo dev)
+
 # OS/ARCH pairs portly-server embeds and can auto-install via /install.sh.
 # Windows is deliberately excluded here — the curl|sudo bash installer
 # doesn't apply there; Windows users cross-compile/build directly instead
@@ -24,7 +30,7 @@ build-clientbins:
 ## Must run after build-clientbins so the embed picks up fresh binaries.
 build-server:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(BIN_DIR)/portly-server ./cmd/portly-server
+	go build -ldflags "-X main.buildCommit=$(GIT_COMMIT)" -o $(BIN_DIR)/portly-server ./cmd/portly-server
 
 build-client:
 	@mkdir -p $(BIN_DIR)

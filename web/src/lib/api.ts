@@ -100,6 +100,15 @@ export interface BootstrapStatus {
   needs_setup: boolean;
 }
 
+export interface UpdateStatus {
+  current_commit: string;
+  latest_commit?: string;
+  update_available: boolean;
+  checked_at: string;
+  check_error?: string;
+  can_apply: boolean;
+}
+
 export type CertState = "" | "pending" | "ready" | "error";
 
 export interface SetupStatus {
@@ -189,6 +198,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirm }),
     }),
+
+  getUpdateStatus: () => request<UpdateStatus>("/api/settings/update-status"),
+  checkUpdate: () => request<UpdateStatus>("/api/settings/check-update", { method: "POST" }),
+  applyUpdate: () => request<void>("/api/settings/apply-update", { method: "POST" }),
 };
 
 export interface LiveTunnelStat {

@@ -153,6 +153,44 @@ checker wired up yet (their config predates it) — re-run their install
 command once (**Add machine** → same machine name is fine, it just
 re-enrolls) and they'll self-update automatically from then on.
 
+**Panel (Settings → Updates):** the panel itself checks GitHub every 6
+hours (and on demand via **Check now**) for a newer commit on `main` than
+the one `portly-server` was built from, and shows it right there — no
+more finding out you're behind by chance. That much works out of the box,
+no setup needed.
+
+An **Update now** button that actually runs the update from the panel
+(instead of you SSHing in and running the one-liner yourself) is also
+there, but it's opt-in — `portly-server` deliberately runs as an
+unprivileged `portly` user, and triggering `git pull` + rebuild + a
+service restart needs root. Enabling the button grants exactly that, via
+a narrowly-scoped passwordless `sudo` rule and nothing more:
+
+```bash
+sudo ./scripts/quickstart-vps.sh --enable-update-button
+```
+
+This writes `/etc/sudoers.d/portly-update` with a single rule — `portly`
+may run `/opt/portly-src/scripts/quickstart-vps.sh` (that exact script,
+no arguments, nothing else) as root without a password. `portly` can't
+tamper with what that rule actually executes: nothing under
+`/opt/portly-src` except its `web/` subdirectory is writable by `portly`.
+The rule is validated with `visudo -c` before being installed, and only
+takes effect for a checkout at the standard `/opt/portly-src` path (the
+one every documented install method produces).
+
+Revoke it again any time with:
+
+```bash
+sudo ./scripts/quickstart-vps.sh --disable-update-button
+```
+
+Clicking **Update now** runs the exact same process as the manual
+one-liner, as a background process detached from the request that
+triggered it (since `portly-server` restarts itself partway through and
+can't finish handling that request itself) — the panel polls and reloads
+automatically once the server comes back up on the new build.
+
 ## Uninstalling
 
 **VPS (`portly-server` + web UI):**
@@ -312,6 +350,16 @@ all of this in one step.
   session, including the one that triggered it. The control-plane TLS
   identity (CA/certificate fingerprint) is *not* regenerated — already
   enrolled-but-not-yet-uninstalled machines still trust the same server.
+- The panel's update checker (Settings → Updates) only ever makes read-only
+  `GET` requests to GitHub's public API — no credentials sent or required.
+  The **Update now** button that actually triggers an update is off by
+  default and stays off unless you explicitly run `quickstart-vps.sh
+  --enable-update-button` once (see "Updating" above) — that grants the
+  unprivileged `portly` user passwordless root access to exactly one
+  script, at its exact installed path, with no arguments; it cannot be
+  used to run anything else. Requests to trigger it that don't come with a
+  valid, logged-in admin session (same auth as every other panel action)
+  are rejected before the sudo rule is ever touched.
 - Client tokens are 256-bit random values; only their SHA-256 hash is stored
   server-side. The "Add machine" flow never displays the token itself —
   only a short-lived, single-use enrollment code that `portly-client enroll`
@@ -353,6 +401,8 @@ internal/api             REST/WebSocket management API, install.sh, embedded cli
 internal/db              SQLite schema and queries
 internal/tlsutil         self-signed CA + fingerprint-pinned TLS (control-plane)
 internal/netutil         public IP auto-detection
+internal/updatecheck     compares the running build against GitHub's main
+internal/lanscan         ARP-based local network discovery (client-side)
 internal/config          client config file (YAML)
 web/                      Next.js + Tailwind web UI (separate process)
 scripts/                 install-go.sh, quickstart-vps.sh, uninstall-vps.sh
@@ -369,8 +419,10 @@ code expired or got closed unused), the Next.js/Tailwind web UI (clients,
 tunnels, LAN device suggestions, live + historical bandwidth), setup-code-
 gated first-run bootstrap (no seeded default password), zero-config setup
 (public IP auto-detection, optional domain + automatic Let's Encrypt HTTPS
-from the Settings → Domain page), and clean uninstall paths (a VPS
-uninstall script, `portly-client uninstall`, and a panel factory reset).
+from the Settings → Domain page), clean uninstall paths (a VPS uninstall
+script, `portly-client uninstall`, and a panel factory reset), and a panel
+update checker with an opt-in one-click **Update now** button gated behind
+a narrowly-scoped sudo grant.
 
 Ideas for later: traffic quotas/limits with automatic pause, alert delivery
 beyond the in-UI dashboard (e.g. webhooks), Layer-7 HTTP/HTTPS tunnels

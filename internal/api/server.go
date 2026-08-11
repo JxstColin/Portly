@@ -20,6 +20,7 @@ import (
 
 	"github.com/jxstcolin/portly/internal/db"
 	"github.com/jxstcolin/portly/internal/tunnel"
+	"github.com/jxstcolin/portly/internal/updatecheck"
 )
 
 const sessionCookieName = "portly_session"
@@ -67,6 +68,17 @@ type Server struct {
 	// code the same way it does on a brand new install.
 	OnFactoryReset func()
 
+	// ApplyUpdate, if set by main.go (only when the one-click-update sudo
+	// grant is actually present — see README), triggers the real update
+	// process (git pull, rebuild, service restart) as a detached background
+	// process and returns once it's been started, not once it's finished:
+	// the server itself gets restarted partway through. nil means one-click
+	// update isn't enabled on this install.
+	ApplyUpdate func() error
+	// BuildCommit is the git commit this binary was built from (see
+	// cmd/portly-server's buildCommit), used for on-demand update checks.
+	BuildCommit string
+
 	sessMu   sync.Mutex
 	sessions map[string]sessionInfo
 
@@ -76,6 +88,9 @@ type Server struct {
 	certMu    sync.RWMutex
 	certState string // "", "pending", "ready", "error"
 	certErr   string
+
+	updateMu     sync.RWMutex
+	updateStatus updatecheck.Status
 }
 
 type sessionInfo struct {
@@ -130,6 +145,20 @@ func (s *Server) getCertState() (state, errMsg string) {
 	return s.certState, s.certErr
 }
 
+// SetUpdateStatus is called by main.go's periodic update checker to report
+// the result of comparing this build against the latest commit on GitHub.
+func (s *Server) SetUpdateStatus(status updatecheck.Status) {
+	s.updateMu.Lock()
+	s.updateStatus = status
+	s.updateMu.Unlock()
+}
+
+func (s *Server) getUpdateStatus() updatecheck.Status {
+	s.updateMu.RLock()
+	defer s.updateMu.RUnlock()
+	return s.updateStatus
+}
+
 func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 
@@ -166,6 +195,9 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("POST /api/setup/domain", s.requireAuth(s.handleSetDomain))
 
 	mux.HandleFunc("POST /api/settings/factory-reset", s.requireAuth(s.handleFactoryReset))
+	mux.HandleFunc("GET /api/settings/update-status", s.requireAuth(s.handleUpdateStatus))
+	mux.HandleFunc("POST /api/settings/check-update", s.requireAuth(s.handleCheckUpdate))
+	mux.HandleFunc("POST /api/settings/apply-update", s.requireAuth(s.handleApplyUpdate))
 
 	if s.WebUpstream != "" {
 		if target, err := url.Parse(s.WebUpstream); err == nil {
