@@ -6,7 +6,14 @@ import { AppShell } from "@/components/AppShell";
 import { AddMachineModal } from "@/components/AddMachineModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { StatusDot } from "@/components/StatusDot";
-import { api, Client, SetupStatus } from "@/lib/api";
+import { api, Client, SetupStatus, UpdateStatus } from "@/lib/api";
+
+// How often the dashboard re-polls the (cheap, cached) update-status
+// endpoint. The panel's own background check against GitHub runs every 15
+// minutes server-side (see cmd/portly-server/main.go) — polling this local
+// cache once a minute is enough to reflect that promptly without adding
+// any real load, since it never itself reaches out to GitHub.
+const updateStatusPollInterval = 60_000;
 
 function timeAgo(unixSeconds?: number): string {
   if (!unixSeconds) return "never";
@@ -24,6 +31,7 @@ function DashboardContent() {
   const [deleteClient, setDeleteClient] = useState<Client | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +52,13 @@ function DashboardContent() {
     api.getSetup().then(setSetup).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    const poll = () => api.getUpdateStatus().then(setUpdateStatus).catch(() => {});
+    poll();
+    const interval = setInterval(poll, updateStatusPollInterval);
+    return () => clearInterval(interval);
+  }, []);
+
   async function removeClient(id: string) {
     await api.deleteClient(id);
     load();
@@ -51,6 +66,18 @@ function DashboardContent() {
 
   return (
     <div>
+      {updateStatus?.update_available && (
+        <Link
+          href="/settings?tab=updates"
+          className="mb-4 flex items-center justify-between rounded-lg border border-[color:var(--accent)]/40 bg-accent/10 px-4 py-2.5 text-sm hover:bg-accent/15"
+        >
+          <span className="text-foreground-secondary">
+            A Portly update is available.
+          </span>
+          <span className="font-medium text-accent">View →</span>
+        </Link>
+      )}
+
       {setup && !setup.domain && (
         <Link
           href="/settings?tab=domain"

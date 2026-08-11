@@ -38,6 +38,14 @@ var buildCommit = "dev"
 // that flag writes to /etc/sudoers.d/portly-update.
 const updateScriptPath = "/opt/portly-src/scripts/quickstart-vps.sh"
 
+// updateCheckInterval is how often the panel re-checks GitHub for a newer
+// commit in the background. Matches the interval portly-client already
+// polls at for its own binary updates (see README "Updating") — frequent
+// enough that "update available" shows up promptly, while a single
+// unauthenticated GitHub API request every 15 minutes stays far under its
+// 60-requests/hour rate limit even with "Check now" clicks on top.
+const updateCheckInterval = 15 * time.Minute
+
 // sudoUpdateAllowed probes (without running anything) whether the current
 // user is allowed to run updateScriptPath as root without a password —
 // i.e. whether quickstart-vps.sh --enable-update-button was ever run here.
@@ -262,7 +270,7 @@ func runCmd() *cobra.Command {
 			}
 			apiSrv.SetUpdateStatus(updatecheck.Check(context.Background(), buildCommit))
 			go func() {
-				ticker := time.NewTicker(6 * time.Hour)
+				ticker := time.NewTicker(updateCheckInterval)
 				defer ticker.Stop()
 				for range ticker.C {
 					apiSrv.SetUpdateStatus(updatecheck.Check(context.Background(), buildCommit))

@@ -51,6 +51,12 @@ func fetchLatestCommit(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	// GitHub's API sits behind an edge cache that can briefly serve a
+	// commit that's already a few seconds stale right after a push — ask
+	// it not to, so "Check now" right after pushing a fix doesn't have to
+	// be clicked twice before it reflects reality.
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
