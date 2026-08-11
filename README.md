@@ -28,7 +28,7 @@ multiplexed over that single connection (like ngrok, frp, or rathole).
   public IP on its own; the panel is reachable at `http://<that IP>` right
   after setup, no flags needed.
 - **Optional domain + automatic HTTPS.** Point a domain's A/AAAA record at
-  the VPS and set it in the web UI's Setup page — Portly requests and
+  the VPS and set it in the web UI's Settings → Domain page — Portly requests and
   renews a free Let's Encrypt certificate for it automatically, and the
   panel becomes reachable at `https://your-domain`.
 - **Adding a machine is one command.** The web UI's "Add machine" button
@@ -81,22 +81,26 @@ that.
 Already have the repo cloned? Run `sudo ./scripts/quickstart-vps.sh` from
 its root instead — no CDN involved either way.
 
-### 2. Open the web UI
+### 2. Open the web UI and claim your admin account
 
-Visit `http://<the detected IP>` (printed at the end of step 1), log in
-with `admin` / `portly`, and set a new username/password when prompted
-(required on first login).
+Visit `http://<the detected IP>` (printed at the end of step 1). There's no
+default login — a fresh install has no admin account at all yet, only a
+one-time **setup code** that step 1 also printed (and wrote to
+`/var/lib/portly/setup-code.txt` if you missed it: `journalctl -u
+portly-server` finds it too). Enter that code plus the username/password
+you want, and you're in — nothing to change afterwards, unlike a seeded
+default password someone could log in with before you do.
 
 ### 3. (Optional) Point a domain at it
 
-Open **Setup** in the web UI. It shows the server's detected public IP —
-create an A record (and AAAA for IPv6) for your domain pointing at it,
-e.g. `panel.example.com` → that IP, then enter the domain and click
-**Activate**. Portly requests a free Let's Encrypt certificate for it
-automatically; once issued (usually a few seconds after DNS resolves),
-the panel is reachable at `https://panel.example.com` — no reverse proxy
-or manual TLS setup needed. Skip this step entirely and the panel just
-keeps working over plain HTTP on the IP address.
+Open **Settings → Domain** in the web UI. It shows the server's detected
+public IP — create an A record (and AAAA for IPv6) for your domain
+pointing at it, e.g. `panel.example.com` → that IP, then enter the domain
+and click **Activate**. Portly requests a free Let's Encrypt certificate
+for it automatically; once issued (usually a few seconds after DNS
+resolves), the panel is reachable at `https://panel.example.com` — no
+reverse proxy or manual TLS setup needed. Skip this step entirely and the
+panel just keeps working over plain HTTP on the IP address.
 
 ### 4. Add a machine
 
@@ -108,7 +112,11 @@ curl -fsSL 'http://<ip-or-domain>/install.sh?code=XXXXXXXXXX' | sudo bash
 ```
 
 The dialog shows "Connected!" once the client comes online — no manual
-token, config file, or service setup needed.
+token, config file, or service setup needed. Codes are single-use and
+expire after 15 minutes; if yours expired or you closed the dialog too
+soon, click **Get install command** next to the machine on the dashboard
+(shown for any machine that's never successfully connected) for a fresh
+one — no need to delete and re-add it.
 
 ### 5. Add a tunnel
 
@@ -246,6 +254,13 @@ all of this in one step.
 
 ## Security notes
 
+- There's no seeded default admin account. `portly-server` generates a
+  random one-time setup code on first run (logged and written to
+  `<data-dir>/setup-code.txt`, `0600`), which the web UI's first-run screen
+  exchanges for the actual admin account you choose. The code is deleted
+  the moment it's claimed and the panel refuses to issue a second admin
+  account afterwards — an already-running install's admin account isn't
+  affected by any of this.
 - Client tokens are 256-bit random values; only their SHA-256 hash is stored
   server-side. The "Add machine" flow never displays the token itself —
   only a short-lived, single-use enrollment code that `portly-client enroll`
@@ -253,20 +268,22 @@ all of this in one step.
 - The control-plane connection is always TLS, authenticated by pinning the
   server certificate's fingerprint (no public CA required).
 - `--web-addr` (default `:80`) is plain HTTP until a domain is configured;
-  set one in the Setup page for real HTTPS via an automatically-issued
+  set one in the Settings → Domain page for real HTTPS via an automatically-issued
   Let's Encrypt certificate. Without a domain, the panel and admin login
   run over plain HTTP on the IP — fine for casual/trusted use, but the
   session cookie and credentials aren't encrypted in transit until you do.
 - Certificates are only ever requested for the exact domain configured in
-  the Setup page (`autocert`'s `HostPolicy` rejects anything else), so
+  the Settings → Domain page (`autocert`'s `HostPolicy` rejects anything else), so
   pointing unrelated DNS at your VPS can't be used to make it issue
   certificates for other names.
 - `--advertise-host` auto-detects this machine's public IP if left unset —
   pass it explicitly if detection fails (no outbound internet) or you want
   a specific value baked into the control-plane cert's SAN list.
-- Public tunnel ports currently have no range restriction; pick ports that
-  don't collide with the control-plane/web/HTTPS ports or other services
-  on the VPS.
+- Public tunnel ports have no range restriction, but creating (or
+  re-enabling) a tunnel does try to actually bind the port first — picking
+  one already used by the control-plane/web/HTTPS ports, sshd, or anything
+  else on the VPS gets rejected immediately with a clear error instead of
+  silently never coming up.
 - `portly-client`'s self-update checks/downloads go over the same
   `api_base` URL it enrolled through (HTTPS once you've set a domain, plain
   HTTP otherwise) and verify the downloaded binary's sha256 against the
@@ -294,12 +311,14 @@ deploy/systemd/          manual-setup unit file templates
 ## Roadmap
 
 Done: Go tunnel core (server + client, TCP and UDP tunnels, dynamic
-reconciliation, real-time traffic accounting, machines auto-uninstall
-themselves when deleted), the management API, the one-command "Add
-machine" installer, the Next.js/Tailwind web UI (clients, tunnels, live +
-historical bandwidth, forced first-login credential change), and zero-config
+reconciliation, real-time traffic accounting, machines auto-uninstall and
+self-update themselves), the management API, the one-command "Add
+machine" installer (with a "Get install command" fallback if the original
+code expired or got closed unused), the Next.js/Tailwind web UI (clients,
+tunnels, LAN device suggestions, live + historical bandwidth), setup-code-
+gated first-run bootstrap (no seeded default password), and zero-config
 setup (public IP auto-detection, optional domain + automatic Let's Encrypt
-HTTPS from the Setup page).
+HTTPS from the Settings → Domain page).
 
 Ideas for later: traffic quotas/limits with automatic pause, alert delivery
 beyond the in-UI dashboard (e.g. webhooks), Layer-7 HTTP/HTTPS tunnels

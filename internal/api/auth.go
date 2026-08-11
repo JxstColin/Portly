@@ -121,6 +121,92 @@ func (s *Server) handleChangeCredentials(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"username": newUsername, "must_change_password": false})
 }
 
+// handleBootstrapStatus is unauthenticated (there's nothing to authenticate
+// against yet on a fresh install) — the web UI calls it before rendering
+// the login page to decide whether to show the setup-code bootstrap flow
+// instead.
+func (s *Server) handleBootstrapStatus(w http.ResponseWriter, r *http.Request) {
+	hasAdmin, err := s.DB.HasAdminUser()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"needs_setup": !hasAdmin})
+}
+
+type bootstrapClaimRequest struct {
+	SetupCode string `json:"setup_code"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+}
+
+// handleBootstrapClaim creates the first (and only) admin account, gated by
+// the one-time setup code portly-server printed/wrote out on first run —
+// replacing the old seeded admin/portly-with-forced-change flow, which
+// meant anyone who found the panel before the real admin logged in once
+// could log in with a publicly-known default password.
+func (s *Server) handleBootstrapClaim(w http.ResponseWriter, r *http.Request) {
+	var req bootstrapClaimRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	hasAdmin, err := s.DB.HasAdminUser()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if hasAdmin {
+		writeError(w, http.StatusConflict, "setup already completed")
+		return
+	}
+
+	if err := s.DB.ClaimSetupCode(req.SetupCode); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid or already-used setup code")
+		return
+	}
+
+	if utf8.RuneCountInString(req.Username) < 3 {
+		writeError(w, http.StatusBadRequest, "username must be at least 3 characters")
+		return
+	}
+	if utf8.RuneCountInString(req.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to hash password")
+		return
+	}
+	admin, err := s.DB.CreateAdminUser(req.Username, string(hash))
+	if err != nil {
+		writeError(w, http.StatusConflict, "could not create admin account")
+		return
+	}
+
+	if s.OnAdminClaimed != nil {
+		s.OnAdminClaimed()
+	}
+
+	token := s.createSession(admin.ID)
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(sessionTTL),
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"username":             admin.Username,
+		"must_change_password": false,
+	})
+}
+
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"advertise_host": s.AdvertiseHost,

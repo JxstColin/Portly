@@ -1,17 +1,28 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 
 export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
-  const [username, setUsername] = useState("admin");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // A fresh install has no admin account yet — send it to the setup-code
+  // bootstrap flow instead of a login form with nothing to log into.
+  useEffect(() => {
+    api
+      .bootstrapStatus()
+      .then((s) => {
+        if (s.needs_setup) router.replace("/bootstrap");
+      })
+      .catch(() => {});
+  }, [router]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -19,7 +30,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       const me = await login(username, password);
-      router.push(me.must_change_password ? "/account?first-login=1" : "/dashboard");
+      router.push(me.must_change_password ? "/settings?tab=account&first-login=1" : "/dashboard");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Login failed");
     } finally {
@@ -82,11 +93,6 @@ export default function LoginPage() {
           >
             {submitting ? "Signing in…" : "Sign in"}
           </button>
-
-          <p className="mt-4 text-center text-xs text-foreground-muted">
-            First time? Default login is <code>admin</code> / <code>portly</code> — you
-            will be asked to change it.
-          </p>
         </form>
       </div>
     </main>

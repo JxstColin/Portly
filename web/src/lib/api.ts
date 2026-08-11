@@ -96,6 +96,10 @@ export interface CreateClientResult {
   expires_at: number;
 }
 
+export interface BootstrapStatus {
+  needs_setup: boolean;
+}
+
 export type CertState = "" | "pending" | "ready" | "error";
 
 export interface SetupStatus {
@@ -108,6 +112,13 @@ export interface SetupStatus {
 }
 
 export const api = {
+  bootstrapStatus: () => request<BootstrapStatus>("/api/bootstrap/status"),
+  bootstrapClaim: (params: { setup_code: string; username: string; password: string }) =>
+    request<Me>("/api/bootstrap/claim", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+
   login: (username: string, password: string) =>
     request<Me>("/api/auth/login", {
       method: "POST",
@@ -136,6 +147,8 @@ export const api = {
     request<void>(`/api/clients/${id}`, { method: "DELETE" }),
   listDevices: (clientId: string) =>
     request<Device[]>(`/api/clients/${clientId}/devices`),
+  reissueInstall: (id: string) =>
+    request<CreateClientResult>(`/api/clients/${id}/reissue-install`, { method: "POST" }),
 
   listTunnels: (clientId?: string) =>
     request<Tunnel[]>(
