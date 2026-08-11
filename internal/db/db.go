@@ -12,15 +12,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
 var schemaSQL string
 
-const defaultAdminUsername = "admin"
-const defaultAdminPassword = "portly"
+const setupCodeSettingKey = "setup_code"
 
 type DB struct {
 	sql *sql.DB
@@ -38,35 +36,11 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
-	d := &DB{sql: sqlDB}
-	if err := d.ensureAdminUser(); err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("seed admin user: %w", err)
-	}
-	return d, nil
+	return &DB{sql: sqlDB}, nil
 }
 
 func (d *DB) Close() error {
 	return d.sql.Close()
-}
-
-func (d *DB) ensureAdminUser() error {
-	var count int
-	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(defaultAdminPassword), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	_, err = d.sql.Exec(
-		`INSERT INTO admin_users (id, username, password_hash, must_change_password, created_at) VALUES (?, ?, ?, 1, ?)`,
-		uuid.NewString(), defaultAdminUsername, string(hash), time.Now().Unix(),
-	)
-	return err
 }
 
 // --- Admin user (single-admin) ---
@@ -78,6 +52,19 @@ type AdminUser struct {
 	MustChangePassword bool
 }
 
+// HasAdminUser reports whether the first admin account has been created
+// yet. Fresh installs start with none — the web UI's bootstrap flow (gated
+// by the one-time setup code EnsureSetupCode prints) creates it, rather
+// than seeding a default admin/portly account someone might forget to
+// change.
+func (d *DB) HasAdminUser() (bool, error) {
+	var count int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (d *DB) GetAdminUser() (AdminUser, error) {
 	var a AdminUser
 	var mustChange int
@@ -87,12 +74,69 @@ func (d *DB) GetAdminUser() (AdminUser, error) {
 	return a, err
 }
 
+// CreateAdminUser inserts the very first (and only) admin account, e.g.
+// from the bootstrap claim flow. must_change_password starts false since
+// the admin just chose this password themselves, unlike the old seeded
+// default.
+func (d *DB) CreateAdminUser(username, passwordHash string) (AdminUser, error) {
+	a := AdminUser{ID: uuid.NewString(), Username: username, PasswordHash: passwordHash}
+	_, err := d.sql.Exec(
+		`INSERT INTO admin_users (id, username, password_hash, must_change_password, created_at) VALUES (?, ?, ?, 0, ?)`,
+		a.ID, a.Username, a.PasswordHash, time.Now().Unix(),
+	)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	return a, nil
+}
+
 func (d *DB) UpdateAdminCredentials(id, username, passwordHash string, mustChangePassword bool) error {
 	_, err := d.sql.Exec(
 		`UPDATE admin_users SET username = ?, password_hash = ?, must_change_password = ? WHERE id = ?`,
 		username, passwordHash, boolToInt(mustChangePassword), id,
 	)
 	return err
+}
+
+// EnsureSetupCode returns the one-time code needed to claim the first admin
+// account (via POST /api/bootstrap/claim), generating and persisting one on
+// a fresh install if none exists yet. Returns ("", true, nil) once an admin
+// already exists — there's nothing left to bootstrap.
+func (d *DB) EnsureSetupCode() (code string, hasAdmin bool, err error) {
+	hasAdmin, err = d.HasAdminUser()
+	if err != nil {
+		return "", false, err
+	}
+	if hasAdmin {
+		return "", true, nil
+	}
+	if existing, ok, err := d.GetSetting(setupCodeSettingKey); err != nil {
+		return "", false, err
+	} else if ok {
+		return existing, false, nil
+	}
+	code, err = randomCode(12)
+	if err != nil {
+		return "", false, err
+	}
+	if err := d.SetSetting(setupCodeSettingKey, code); err != nil {
+		return "", false, err
+	}
+	return code, false, nil
+}
+
+// ClaimSetupCode validates code against the stored setup code and, on
+// success, consumes it (so it can never be reused) — the caller still has
+// to actually create the admin account afterwards.
+func (d *DB) ClaimSetupCode(code string) error {
+	stored, ok, err := d.GetSetting(setupCodeSettingKey)
+	if err != nil {
+		return err
+	}
+	if !ok || code == "" || stored != code {
+		return fmt.Errorf("invalid setup code")
+	}
+	return d.DeleteSetting(setupCodeSettingKey)
 }
 
 // --- Clients ---
@@ -142,6 +186,27 @@ func (d *DB) CreateClient(name string) (Client, string, error) {
 		return Client{}, "", fmt.Errorf("insert client: %w", err)
 	}
 	return c, token, nil
+}
+
+// RotateClientToken replaces clientID's long-lived credential and returns
+// the new plaintext token — used to re-issue an install command for a
+// machine that never successfully connected with its original one (e.g.
+// its enrollment code expired unused), without touching anything else.
+func (d *DB) RotateClientToken(clientID string) (string, error) {
+	token, hash, err := GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	res, err := d.sql.Exec(`UPDATE clients SET token_hash = ? WHERE id = ?`, hash, clientID)
+	if err != nil {
+		return "", err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return "", err
+	} else if n == 0 {
+		return "", sql.ErrNoRows
+	}
+	return token, nil
 }
 
 func (d *DB) GetClientByTokenHash(hash string) (Client, error) {
@@ -460,6 +525,11 @@ func (d *DB) SetSetting(key, value string) error {
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 		key, value,
 	)
+	return err
+}
+
+func (d *DB) DeleteSetting(key string) error {
+	_, err := d.sql.Exec(`DELETE FROM server_settings WHERE key = ?`, key)
 	return err
 }
 

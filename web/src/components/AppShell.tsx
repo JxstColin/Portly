@@ -22,8 +22,8 @@ export function AppShell({
       router.replace("/login");
       return;
     }
-    if (enforceCredentialChange && user.must_change_password && pathname !== "/account") {
-      router.replace("/account?first-login=1");
+    if (enforceCredentialChange && user.must_change_password && pathname !== "/settings") {
+      router.replace("/settings?tab=account&first-login=1");
     }
   }, [loading, user, enforceCredentialChange, pathname, router]);
 
@@ -56,8 +56,7 @@ export function AppShell({
             <span className="text-base font-semibold tracking-tight">Portly</span>
             <nav className="flex items-center gap-1">
               {navItem("/dashboard", "Dashboard")}
-              {navItem("/setup", "Setup")}
-              {navItem("/account", "Account")}
+              {navItem("/settings", "Settings")}
             </nav>
           </div>
           <div className="flex items-center gap-3">

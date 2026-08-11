@@ -1,21 +1,44 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { api, ApiError, CreateClientResult } from "@/lib/api";
+import { api, ApiError, Client, CreateClientResult } from "@/lib/api";
 
 export function AddMachineModal({
   onClose,
   onCreated,
+  reissueFor,
 }: {
   onClose: () => void;
   onCreated: () => void;
+  // When set, skip the name-entry step and get a fresh install command for
+  // this existing (never-yet-connected) machine instead of creating a new
+  // one — for when the original code expired or the dialog got closed
+  // before it was ever run.
+  reissueFor?: Client;
 }) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting, setSubmitting] = useState(!!reissueFor);
   const [result, setResult] = useState<CreateClientResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!reissueFor) return;
+    api
+      .reissueInstall(reissueFor.id)
+      .then((res) => {
+        setResult(res);
+        onCreated();
+      })
+      .catch((err) => {
+        setError(err instanceof ApiError ? err.message : "Failed to get install command");
+      })
+      .finally(() => setSubmitting(false));
+    // Only ever runs once per mount — reissueFor.id is stable for the
+    // lifetime of this modal instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -61,7 +84,26 @@ export function AddMachineModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
       <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-lg">
-        {!result ? (
+        {reissueFor && !result ? (
+          <>
+            <h2 className="text-lg font-semibold">Install command for {reissueFor.name}</h2>
+            {error ? (
+              <>
+                <p className="mt-2 text-sm text-[color:var(--status-critical)]">{error}</p>
+                <div className="mt-5 flex justify-end">
+                  <button
+                    onClick={onClose}
+                    className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary hover:bg-surface-raised"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="mt-1 text-sm text-foreground-secondary">Getting a fresh one-time code…</p>
+            )}
+          </>
+        ) : !result ? (
           <>
             <h2 className="text-lg font-semibold">Add machine</h2>
             <p className="mt-1 text-sm text-foreground-secondary">

@@ -57,6 +57,11 @@ type Server struct {
 	// SetCertState. Runs in its own goroutine; may block.
 	OnDomainSet func(domain string)
 
+	// OnAdminClaimed, if set by main.go, is called once the first admin
+	// account is created via the setup-code bootstrap flow, so it can clean
+	// up the setup-code file it wrote to disk.
+	OnAdminClaimed func()
+
 	sessMu   sync.Mutex
 	sessions map[string]sessionInfo
 
@@ -128,12 +133,16 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("POST /api/auth/change-credentials", s.requireAuth(s.handleChangeCredentials))
 
+	mux.HandleFunc("GET /api/bootstrap/status", s.handleBootstrapStatus)
+	mux.HandleFunc("POST /api/bootstrap/claim", s.handleBootstrapClaim)
+
 	mux.HandleFunc("GET /api/server/info", s.requireAuth(s.handleServerInfo))
 
 	mux.HandleFunc("GET /api/clients", s.requireAuth(s.handleListClients))
 	mux.HandleFunc("POST /api/clients", s.requireAuth(s.handleCreateClient))
 	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuth(s.handleDeleteClient))
 	mux.HandleFunc("GET /api/clients/{id}/devices", s.requireAuth(s.handleListClientDevices))
+	mux.HandleFunc("POST /api/clients/{id}/reissue-install", s.requireAuth(s.handleReissueInstall))
 
 	mux.HandleFunc("GET /api/tunnels", s.requireAuth(s.handleListTunnels))
 	mux.HandleFunc("POST /api/tunnels", s.requireAuth(s.handleCreateTunnel))

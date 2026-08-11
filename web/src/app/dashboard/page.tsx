@@ -19,6 +19,7 @@ function timeAgo(unixSeconds?: number): string {
 function DashboardContent() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [reissueClient, setReissueClient] = useState<Client | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
 
@@ -51,7 +52,7 @@ function DashboardContent() {
     <div>
       {setup && !setup.domain && (
         <Link
-          href="/setup"
+          href="/settings?tab=domain"
           className="mb-4 flex items-center justify-between rounded-lg border border-border bg-surface px-4 py-2.5 text-sm hover:bg-surface-raised"
         >
           <span className="text-foreground-secondary">
@@ -111,12 +112,22 @@ function DashboardContent() {
                     {timeAgo(c.last_seen)}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => removeClient(c.id)}
-                      className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      {!c.last_seen && (
+                        <button
+                          onClick={() => setReissueClient(c)}
+                          className="text-xs text-foreground-muted hover:text-accent"
+                        >
+                          Get install command
+                        </button>
+                      )}
+                      <button
+                        onClick={() => removeClient(c.id)}
+                        className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -127,6 +138,13 @@ function DashboardContent() {
 
       {showAddModal && (
         <AddMachineModal onClose={() => setShowAddModal(false)} onCreated={load} />
+      )}
+      {reissueClient && (
+        <AddMachineModal
+          onClose={() => setReissueClient(null)}
+          onCreated={load}
+          reissueFor={reissueClient}
+        />
       )}
     </div>
   );

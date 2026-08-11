@@ -85,6 +85,43 @@ func (s *Server) installCommand(code string) string {
 	return fmt.Sprintf("curl -fsSL '%s/install.sh?code=%s' | sudo bash", s.apiBaseURL(), code)
 }
 
+// handleReissueInstall gets a machine a fresh install command — for when
+// its original enrollment code expired unused, or the "Add machine" dialog
+// got closed before it was ever run. Only allowed for machines that have
+// never successfully connected: rotating the token of one that's already
+// running would silently break it the next time it reconnects, which isn't
+// what "I lost the command" means.
+func (s *Server) handleReissueInstall(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	client, err := s.DB.GetClientByID(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "client not found")
+		return
+	}
+	if client.LastSeen != nil {
+		writeError(w, http.StatusConflict, "this machine already connected once — delete and re-add it to get a fresh install command")
+		return
+	}
+
+	token, err := s.DB.RotateClientToken(client.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	code, err := s.DB.CreateEnrollmentCode(client.ID, token, enrollCodeTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"client":          toClientView(client, false),
+		"install_command": s.installCommand(code),
+		"enroll_code":     code,
+		"expires_at":      time.Now().Add(enrollCodeTTL).Unix(),
+	})
+}
+
 // handleListClientDevices returns whatever LAN devices this client last
 // reported, for the "Add tunnel" UI's local-host suggestions. Empty (not an
 // error) if it's never reported one yet — e.g. it just connected and hasn't

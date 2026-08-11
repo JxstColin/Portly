@@ -181,9 +181,19 @@ PUBLIC_IP="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || echo "
 
 log "done."
 echo ""
-echo "Panel:           http://${PUBLIC_IP}"
-echo "Default login:   admin / portly  (you MUST change this on first login)"
+echo "Panel: http://${PUBLIC_IP}"
 echo ""
+SETUP_CODE_FILE=/var/lib/portly/setup-code.txt
+if [ -f "$SETUP_CODE_FILE" ]; then
+	echo "No admin account yet. Open the panel and enter this one-time setup"
+	echo "code to create one (you'll pick your own username/password there):"
+	echo ""
+	echo "  $(cat "$SETUP_CODE_FILE")"
+	echo ""
+else
+	echo "An admin account already exists on this install — log in as usual."
+	echo ""
+fi
 echo "Optional: open the panel, go to Setup, and point a domain (e.g."
 echo "panel.example.com) at ${PUBLIC_IP} via an A/AAAA record — Portly gets"
 echo "you a free Let's Encrypt certificate automatically and the panel then"

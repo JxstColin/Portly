@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { api } from "@/lib/api";
 
 export default function Home() {
   const { user, loading } = useAuth();
@@ -11,9 +12,12 @@ export default function Home() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace("/login");
+      api
+        .bootstrapStatus()
+        .then((s) => router.replace(s.needs_setup ? "/bootstrap" : "/login"))
+        .catch(() => router.replace("/login"));
     } else if (user.must_change_password) {
-      router.replace("/account?first-login=1");
+      router.replace("/settings?tab=account&first-login=1");
     } else {
       router.replace("/dashboard");
     }
