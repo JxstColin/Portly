@@ -195,12 +195,12 @@ function DangerZone() {
       {!open ? (
         <button
           onClick={() => setOpen(true)}
-          className="mt-4 rounded-lg border border-[color:var(--status-critical)]/40 px-3 py-1.5 text-sm text-[color:var(--status-critical)] hover:bg-[color:var(--status-critical)]/10"
+          className="mt-4 rounded-lg border border-[color:var(--status-critical)]/40 px-3 py-1.5 text-sm text-[color:var(--status-critical)] transition-colors hover:bg-[color:var(--status-critical)]/10"
         >
           Factory reset…
         </button>
       ) : (
-        <div className="mt-4 rounded-lg border border-border bg-surface-raised p-3">
+        <div className="mt-4 animate-slide-down rounded-lg border border-border bg-surface-raised p-3">
           <label className="block text-xs font-medium mb-1.5">
             Type <code className="font-mono">RESET</code> to confirm
           </label>
@@ -218,14 +218,14 @@ function DangerZone() {
                 setConfirmText("");
                 setError(null);
               }}
-              className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary hover:bg-surface"
+              className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary transition-colors hover:bg-surface"
             >
               Cancel
             </button>
             <button
               onClick={onReset}
               disabled={confirmText !== "RESET" || submitting}
-              className="rounded-lg bg-[color:var(--status-critical)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              className="rounded-lg bg-[color:var(--status-critical)] px-3 py-1.5 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? "Resetting…" : "Factory reset"}
             </button>
@@ -358,7 +358,7 @@ function DomainTab() {
             <button
               type="submit"
               disabled={submitting || !domainInput.trim()}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
             >
               {submitting ? "Saving…" : "Activate"}
             </button>
@@ -385,7 +385,7 @@ function DomainTab() {
             <button
               onClick={onClear}
               disabled={submitting}
-              className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
+              className="text-xs text-foreground-muted transition-colors hover:text-[color:var(--status-critical)]"
             >
               Remove domain
             </button>
@@ -522,7 +522,7 @@ function UpdatesTab() {
               <code className="font-mono">{shortCommit(status.current_commit)}</code>
             </div>
             {status.update_available && status.latest_commit && (
-              <div className="mt-1 text-sm">
+              <div className="mt-1 animate-fade-in text-sm">
                 <span className="text-foreground-secondary">Latest: </span>
                 <code className="font-mono">{shortCommit(status.latest_commit)}</code>
               </div>
@@ -549,7 +549,7 @@ function UpdatesTab() {
               <button
                 onClick={onCheckNow}
                 disabled={checking || applying}
-                className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary hover:bg-surface-raised disabled:opacity-50"
+                className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground-secondary transition-colors hover:bg-surface-raised disabled:opacity-50"
               >
                 {checking ? "Checking…" : "Check now"}
               </button>
@@ -558,7 +558,7 @@ function UpdatesTab() {
                 <button
                   onClick={onApply}
                   disabled={applying}
-                  className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+                  className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
                 >
                   {applying ? "Updating…" : "Update now"}
                 </button>
@@ -566,7 +566,7 @@ function UpdatesTab() {
             </div>
 
             {applying && (
-              <p className="mt-3 text-sm text-foreground-secondary">
+              <p className="mt-3 animate-fade-in text-sm text-foreground-secondary">
                 Update running — this can take a few minutes. The panel will go
                 briefly unreachable while the server restarts, then this page
                 refreshes automatically.
@@ -574,7 +574,7 @@ function UpdatesTab() {
             )}
 
             {status.update_available && !status.can_apply && (
-              <div className="mt-4 rounded-lg border border-border bg-surface-raised p-3 text-xs text-foreground-secondary">
+              <div className="mt-4 animate-fade-in rounded-lg border border-border bg-surface-raised p-3 text-xs text-foreground-secondary">
                 One-click update isn&apos;t enabled on this server (this is
                 the case for custom checkouts, or if it was turned off via{" "}
                 <code className="font-mono">--disable-update-button</code>).

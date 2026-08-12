@@ -2,7 +2,7 @@ export function StatusDot({ connected }: { connected: boolean }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-sm">
       <span
-        className="h-2 w-2 shrink-0 rounded-full"
+        className="h-2 w-2 shrink-0 rounded-full transition-colors duration-300"
         style={{
           background: connected
             ? "var(--status-good)"
@@ -11,6 +11,7 @@ export function StatusDot({ connected }: { connected: boolean }) {
         aria-hidden
       />
       <span
+        className="transition-colors duration-300"
         style={{
           color: connected
             ? "var(--status-good-text)"

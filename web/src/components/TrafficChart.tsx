@@ -129,6 +129,7 @@ export function TrafficChart({
                 onMouseLeave={() => setHover((h) => (h === i ? null : h))}
               />
               <rect
+                className="transition-all duration-300 ease-out"
                 x={gx + groupW / 2 - barW - 1}
                 y={HEIGHT - PAD_BOTTOM - inH}
                 width={barW}
@@ -138,6 +139,7 @@ export function TrafficChart({
                 opacity={isHover ? 1 : 0.85}
               />
               <rect
+                className="transition-all duration-300 ease-out"
                 x={gx + groupW / 2 + 1}
                 y={HEIGHT - PAD_BOTTOM - outH}
                 width={barW}
@@ -166,7 +168,7 @@ export function TrafficChart({
       </svg>
 
       {hover !== null && (
-        <div className="mt-2 rounded-lg border border-border bg-surface-raised px-3 py-2 text-xs">
+        <div className="mt-2 animate-fade-in rounded-lg border border-border bg-surface-raised px-3 py-2 text-xs">
           <div className="font-medium text-foreground-secondary">
             {new Date(buckets[hover].t * 1000).toLocaleTimeString()}
           </div>
