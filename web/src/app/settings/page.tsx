@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useCallback, useEffect, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth-context";
@@ -411,6 +411,11 @@ function DomainTab() {
 
 const updatePollInterval = 5_000;
 const updatePollTimeoutMs = 5 * 60_000;
+// How often this tab re-polls the (cheap, cached) update-status endpoint in
+// the background, so "update available" shows up here without needing a
+// manual "Check now" or a page reload. Same cadence as the dashboard
+// banner's poll — see web/src/app/dashboard/page.tsx.
+const updateStatusPollInterval = 60_000;
 
 function shortCommit(sha?: string): string {
   if (!sha) return "unknown";
@@ -423,26 +428,44 @@ function UpdatesTab() {
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The background poll below and an explicit "Check now" click both hit
+  // the network and can resolve in either order — e.g. a poll tick fired
+  // just before a click can still be in flight when the click's own
+  // response lands, and land after it. Without this guard that stale poll
+  // response clobbers the fresh manual-check result — from the user's
+  // side, that looks like "Check now" doing nothing until clicked again.
+  // requestSeq tracks the most recently *dispatched* request so a response
+  // is only applied if nothing newer has been fired since, regardless of
+  // arrival order.
+  const requestSeq = useRef(0);
+  const applyStatus = useCallback((seq: number, s: UpdateStatus) => {
+    if (seq === requestSeq.current) setStatus(s);
+  }, []);
+
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
     try {
       const s = await api.getUpdateStatus();
-      setStatus(s);
+      applyStatus(seq, s);
       return s;
     } catch {
       return null;
     }
-  }, []);
+  }, [applyStatus]);
 
   useEffect(() => {
     load();
+    const interval = setInterval(load, updateStatusPollInterval);
+    return () => clearInterval(interval);
   }, [load]);
 
   async function onCheckNow() {
     setError(null);
     setChecking(true);
+    const seq = ++requestSeq.current;
     try {
       const s = await api.checkUpdate();
-      setStatus(s);
+      applyStatus(seq, s);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Check failed");
     } finally {
@@ -552,13 +575,13 @@ function UpdatesTab() {
 
             {status.update_available && !status.can_apply && (
               <div className="mt-4 rounded-lg border border-border bg-surface-raised p-3 text-xs text-foreground-secondary">
-                One-click update isn&apos;t enabled on this server. Run this on
-                the VPS instead:
+                One-click update isn&apos;t enabled on this server (this is
+                the case for custom checkouts, or if it was turned off via{" "}
+                <code className="font-mono">--disable-update-button</code>).
+                Run this on the VPS instead:
                 <code className="mt-2 block break-all rounded bg-surface px-2 py-1.5 font-mono">
                   {'curl -fsSL "https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/quickstart-vps.sh?$(date +%s)" | sudo bash'}
                 </code>
-                Or re-run it with <code className="font-mono">--enable-update-button</code> once
-                to turn this button on for next time (see the README for what that grants).
               </div>
             )}
 
