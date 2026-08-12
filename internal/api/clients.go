@@ -15,15 +15,22 @@ var clientNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 const enrollCodeTTL = 15 * time.Minute
 
 type clientView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CreatedAt int64  `json:"created_at"`
-	LastSeen  *int64 `json:"last_seen,omitempty"`
-	Connected bool   `json:"connected"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	CreatedAt         int64  `json:"created_at"`
+	LastSeen          *int64 `json:"last_seen,omitempty"`
+	Connected         bool   `json:"connected"`
+	TrafficLimitBytes *int64 `json:"traffic_limit_bytes,omitempty"`
 }
 
 func toClientView(c db.Client, connected bool) clientView {
-	v := clientView{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.Unix(), Connected: connected}
+	v := clientView{
+		ID:                c.ID,
+		Name:              c.Name,
+		CreatedAt:         c.CreatedAt.Unix(),
+		Connected:         connected,
+		TrafficLimitBytes: c.TrafficLimitBytes,
+	}
 	if c.LastSeen != nil {
 		ts := c.LastSeen.Unix()
 		v.LastSeen = &ts
@@ -137,6 +144,38 @@ func (s *Server) handleListClientDevices(w http.ResponseWriter, r *http.Request)
 		devices = []protocol.Device{}
 	}
 	writeJSON(w, http.StatusOK, devices)
+}
+
+type updateClientSettingsRequest struct {
+	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
+}
+
+// handleUpdateClientSettings sets a machine-wide traffic limit — the
+// combined total across all of its tunnels (see db.AddTunnelTraffic).
+func (s *Server) handleUpdateClientSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req updateClientSettingsRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.TrafficLimitBytes != nil && *req.TrafficLimitBytes <= 0 {
+		writeError(w, http.StatusBadRequest, "traffic_limit_bytes must be positive, or omitted/null for unlimited")
+		return
+	}
+
+	if err := s.DB.UpdateClientTrafficLimit(id, req.TrafficLimitBytes); err != nil {
+		writeError(w, http.StatusNotFound, "client not found")
+		return
+	}
+
+	c, err := s.DB.GetClientByID(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toClientView(c, s.Tunnels.ConnectedClientIDs()[id]))
 }
 
 func (s *Server) handleDeleteClient(w http.ResponseWriter, r *http.Request) {

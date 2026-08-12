@@ -123,7 +123,27 @@ one — no need to delete and re-add it.
 Open the machine's detail page, click **Add tunnel**, and map a local
 port (on that machine) to a public port (on the VPS) — e.g. local `25565` →
 public `25565` for Minecraft. It goes live immediately; the running client
-picks it up automatically.
+picks it up automatically. Public port defaults to whatever you type as
+the local port, so the common case (same port on both sides) needs no
+extra typing — edit public port yourself if you want a different one.
+
+Need several ports at once (e.g. a game with a cluster of servers)? Both
+port fields accept a range like `25565-25570` instead of a single number —
+local and public ranges must be the same length, and each pair becomes its
+own tunnel.
+
+Each machine and each tunnel has a **Settings** button for optional extras:
+
+- **Traffic limit** — a GB cap, per tunnel or for a whole machine (combined
+  across all its tunnels). Once reached, the affected tunnel(s) disable
+  themselves automatically; re-enabling one without raising the limit just
+  gets it disabled again the moment more traffic flows through it.
+- **Public hostname** (tunnel settings only) — Portly doesn't manage DNS,
+  but once you set this it shows you the exact DNS record(s) to create at
+  your own DNS provider so people can connect via `mc.example.com` instead
+  of `<vps-ip>:25566`. For protocols with SRV-record support (Minecraft
+  being the common one), it also gives you the SRV record needed to drop
+  the port entirely.
 
 ## Updating
 
