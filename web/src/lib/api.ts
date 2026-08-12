@@ -58,6 +58,7 @@ export interface Client {
   created_at: number;
   last_seen?: number;
   connected: boolean;
+  traffic_limit_bytes?: number;
 }
 
 export type TunnelProtocol = "tcp" | "udp";
@@ -72,6 +73,7 @@ export interface Tunnel {
   public_port: number;
   enabled: boolean;
   traffic_limit_bytes?: number;
+  public_hostname?: string;
   bytes_in_total: number;
   bytes_out_total: number;
   created_at: number;
@@ -154,6 +156,11 @@ export const api = {
     }),
   deleteClient: (id: string) =>
     request<void>(`/api/clients/${id}`, { method: "DELETE" }),
+  updateClientSettings: (id: string, params: { traffic_limit_bytes: number | null }) =>
+    request<Client>(`/api/clients/${id}/settings`, {
+      method: "PATCH",
+      body: JSON.stringify(params),
+    }),
   listDevices: (clientId: string) =>
     request<Device[]>(`/api/clients/${clientId}/devices`),
   reissueInstall: (id: string) =>
@@ -179,6 +186,14 @@ export const api = {
     request<void>(`/api/tunnels/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
+    }),
+  updateTunnelSettings: (
+    id: string,
+    params: { traffic_limit_bytes: number | null; public_hostname: string }
+  ) =>
+    request<Tunnel>(`/api/tunnels/${id}/settings`, {
+      method: "PATCH",
+      body: JSON.stringify(params),
     }),
   deleteTunnel: (id: string) =>
     request<void>(`/api/tunnels/${id}`, { method: "DELETE" }),

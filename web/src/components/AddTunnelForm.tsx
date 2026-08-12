@@ -5,6 +5,29 @@ import { api, ApiError, Device, TunnelProtocol } from "@/lib/api";
 import { Combobox, ComboboxOption, Select } from "@/components/Dropdown";
 
 const devicePollInterval = 15_000;
+// Sanity cap on how many ports a single range can expand to, so a typo
+// like "1-65000" doesn't silently fire off tens of thousands of requests.
+const maxPortsPerRange = 100;
+
+// Accepts either a single port ("25565") or an inclusive range
+// ("25565-25570"). Returns null if the spec doesn't parse or is out of
+// bounds, rather than throwing, so callers can turn it into a form error.
+function parsePortSpec(spec: string): number[] | null {
+  const s = spec.trim();
+  const rangeMatch = s.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (rangeMatch) {
+    const start = Number(rangeMatch[1]);
+    const end = Number(rangeMatch[2]);
+    if (start < 1 || end > 65535 || start > end) return null;
+    if (end - start + 1 > maxPortsPerRange) return null;
+    const ports: number[] = [];
+    for (let p = start; p <= end; p++) ports.push(p);
+    return ports;
+  }
+  const single = Number(s);
+  if (!Number.isInteger(single) || single < 1 || single > 65535) return null;
+  return [single];
+}
 
 export function AddTunnelForm({
   clientId,
@@ -25,6 +48,12 @@ export function AddTunnelForm({
   const [localHost, setLocalHost] = useState("");
   const [localPort, setLocalPort] = useState("");
   const [publicPort, setPublicPort] = useState("");
+  // Public port mirrors local port as it's typed — the common case (a
+  // Minecraft server on 25565 also wants public 25565) needs no extra
+  // typing — but only until the admin actually edits public port
+  // themselves, at which point their choice sticks even if they go back
+  // and change local port again.
+  const [publicPortTouched, setPublicPortTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -56,25 +85,72 @@ export function AddTunnelForm({
     })),
   ];
 
+  function onLocalPortChange(v: string) {
+    setLocalPort(v);
+    if (!publicPortTouched) setPublicPort(v);
+  }
+
+  function onPublicPortChange(v: string) {
+    setPublicPortTouched(true);
+    setPublicPort(v);
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+
+    const localPorts = parsePortSpec(localPort);
+    if (!localPorts) {
+      setError(`Local port must be a number (1-65535) or a range like 25565-25570 (max ${maxPortsPerRange} ports)`);
+      return;
+    }
+    const publicPorts = parsePortSpec(publicPort);
+    if (!publicPorts) {
+      setError(`Public port must be a number (1-65535) or a range like 25565-25570 (max ${maxPortsPerRange} ports)`);
+      return;
+    }
+    if (localPorts.length !== publicPorts.length) {
+      setError(
+        `Local port range has ${localPorts.length} port(s) but public port range has ${publicPorts.length} — they must be the same length`
+      );
+      return;
+    }
+
     setSubmitting(true);
-    try {
-      await api.createTunnel({
-        client_id: clientId,
-        name: name.trim() || `${localHost}:${localPort}`,
-        protocol,
-        local_host: localHost.trim() || "127.0.0.1",
-        local_port: Number(localPort),
-        public_port: Number(publicPort),
-      });
-      onCreated();
+    const host = localHost.trim() || "127.0.0.1";
+    let createdCount = 0;
+    const failures: string[] = [];
+    for (let i = 0; i < localPorts.length; i++) {
+      const lp = localPorts[i];
+      const pp = publicPorts[i];
+      const tunnelName = name.trim()
+        ? localPorts.length > 1
+          ? `${name.trim()} (${lp})`
+          : name.trim()
+        : `${host}:${lp}`;
+      try {
+        await api.createTunnel({
+          client_id: clientId,
+          name: tunnelName,
+          protocol,
+          local_host: host,
+          local_port: lp,
+          public_port: pp,
+        });
+        createdCount++;
+      } catch (err) {
+        failures.push(`${pp}: ${err instanceof ApiError ? err.message : "failed"}`);
+      }
+    }
+    setSubmitting(false);
+
+    if (createdCount > 0) onCreated();
+    if (failures.length === 0) {
       onClose();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to create tunnel");
-    } finally {
-      setSubmitting(false);
+    } else if (localPorts.length === 1) {
+      setError(failures[0].replace(/^\d+: /, ""));
+    } else {
+      setError(`Created ${createdCount}/${localPorts.length} tunnels. Failed — ${failures.join("; ")}`);
     }
   }
 
@@ -83,7 +159,9 @@ export function AddTunnelForm({
       <div className="w-full max-w-2xl animate-scale-in rounded-xl border border-border bg-surface p-6 shadow-lg">
         <h2 className="text-lg font-semibold">Add tunnel</h2>
         <p className="mt-1 text-sm text-foreground-secondary">
-          Expose a port on this machine through the tunnel server.
+          Expose a port on this machine through the tunnel server. Local and
+          public port both accept a range (e.g. <code className="font-mono">25565-25570</code>) to
+          open several ports at once.
         </p>
         <form onSubmit={onSubmit} className="mt-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -119,25 +197,25 @@ export function AddTunnelForm({
             <div>
               <label className="block text-xs font-medium mb-1 text-foreground-secondary">Local port</label>
               <input
-                type="number"
-                min={1}
-                max={65535}
+                type="text"
+                inputMode="numeric"
                 required
+                placeholder="25565"
                 className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
                 value={localPort}
-                onChange={(e) => setLocalPort(e.target.value)}
+                onChange={(e) => onLocalPortChange(e.target.value)}
               />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1 text-foreground-secondary">Public port</label>
               <input
-                type="number"
-                min={1}
-                max={65535}
+                type="text"
+                inputMode="numeric"
                 required
+                placeholder="25565"
                 className="w-full rounded-lg border border-border bg-surface-raised px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
                 value={publicPort}
-                onChange={(e) => setPublicPort(e.target.value)}
+                onChange={(e) => onPublicPortChange(e.target.value)}
               />
             </div>
           </div>

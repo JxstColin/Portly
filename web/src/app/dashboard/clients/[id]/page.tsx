@@ -7,6 +7,8 @@ import { StatusDot } from "@/components/StatusDot";
 import { AddTunnelForm } from "@/components/AddTunnelForm";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { TrafficChart } from "@/components/TrafficChart";
+import { TunnelSettingsModal } from "@/components/TunnelSettingsModal";
+import { MachineSettingsModal } from "@/components/MachineSettingsModal";
 import {
   api,
   Client,
@@ -37,6 +39,8 @@ function ClientDetail({ clientId }: { clientId: string }) {
   const [selectedTunnelId, setSelectedTunnelId] = useState<string | null>(null);
   const [samples, setSamples] = useState<TrafficSample[]>([]);
   const [deleteTunnel, setDeleteTunnel] = useState<Tunnel | null>(null);
+  const [tunnelSettingsFor, setTunnelSettingsFor] = useState<Tunnel | null>(null);
+  const [showMachineSettings, setShowMachineSettings] = useState(false);
 
   const load = useCallback(async () => {
     const [clients, tunnelList] = await Promise.all([
@@ -107,12 +111,20 @@ function ClientDetail({ clientId }: { clientId: string }) {
             </div>
           )}
         </div>
-        <button
-          onClick={() => setShowAddTunnel(true)}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)]"
-        >
-          Add tunnel
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowMachineSettings(true)}
+            className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary transition-colors hover:bg-surface-raised"
+          >
+            Settings
+          </button>
+          <button
+            onClick={() => setShowAddTunnel(true)}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)]"
+          >
+            Add tunnel
+          </button>
+        </div>
       </div>
 
       {showAddTunnel && (
@@ -160,7 +172,12 @@ function ClientDetail({ clientId }: { clientId: string }) {
                     <td className="px-4 py-3 text-foreground-secondary">
                       {t.local_host}:{t.local_port}
                     </td>
-                    <td className="px-4 py-3 text-foreground-secondary">:{t.public_port}</td>
+                    <td className="px-4 py-3 text-foreground-secondary">
+                      :{t.public_port}
+                      {t.public_hostname && (
+                        <div className="text-xs text-foreground-muted">{t.public_hostname}</div>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs">
                       <span style={{ color: "var(--series-1)" }}>
                         ↓{formatRate(live?.rate_in_bps ?? 0)}
@@ -171,6 +188,9 @@ function ClientDetail({ clientId }: { clientId: string }) {
                     </td>
                     <td className="px-4 py-3 text-foreground-secondary">
                       {formatBytes(t.bytes_in_total + t.bytes_out_total)}
+                      {t.traffic_limit_bytes && (
+                        <span className="text-foreground-muted"> / {formatBytes(t.traffic_limit_bytes)}</span>
+                      )}
                     </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <button
@@ -185,12 +205,20 @@ function ClientDetail({ clientId }: { clientId: string }) {
                       </button>
                     </td>
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => setDeleteTunnel(t)}
-                        className="text-xs text-foreground-muted transition-colors hover:text-[color:var(--status-critical)]"
-                      >
-                        Delete
-                      </button>
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          onClick={() => setTunnelSettingsFor(t)}
+                          className="text-xs text-foreground-muted transition-colors hover:text-accent"
+                        >
+                          Settings
+                        </button>
+                        <button
+                          onClick={() => setDeleteTunnel(t)}
+                          className="text-xs text-foreground-muted transition-colors hover:text-[color:var(--status-critical)]"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -217,6 +245,23 @@ function ClientDetail({ clientId }: { clientId: string }) {
           destructive
           onConfirm={() => removeTunnel(deleteTunnel.id)}
           onClose={() => setDeleteTunnel(null)}
+        />
+      )}
+
+      {tunnelSettingsFor && (
+        <TunnelSettingsModal
+          tunnel={tunnelSettingsFor}
+          onClose={() => setTunnelSettingsFor(null)}
+          onUpdated={load}
+        />
+      )}
+
+      {showMachineSettings && client && (
+        <MachineSettingsModal
+          client={client}
+          totalBytes={tunnels.reduce((sum, t) => sum + t.bytes_in_total + t.bytes_out_total, 0)}
+          onClose={() => setShowMachineSettings(false)}
+          onUpdated={load}
         />
       )}
     </div>

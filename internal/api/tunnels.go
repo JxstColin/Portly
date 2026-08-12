@@ -18,6 +18,7 @@ type tunnelView struct {
 	PublicPort        int    `json:"public_port"`
 	Enabled           bool   `json:"enabled"`
 	TrafficLimitBytes *int64 `json:"traffic_limit_bytes,omitempty"`
+	PublicHostname    string `json:"public_hostname,omitempty"`
 	BytesInTotal      int64  `json:"bytes_in_total"`
 	BytesOutTotal     int64  `json:"bytes_out_total"`
 	CreatedAt         int64  `json:"created_at"`
@@ -34,6 +35,7 @@ func toTunnelView(t db.Tunnel) tunnelView {
 		PublicPort:        t.PublicPort,
 		Enabled:           t.Enabled,
 		TrafficLimitBytes: t.TrafficLimitBytes,
+		PublicHostname:    t.PublicHostname,
 		BytesInTotal:      t.BytesInTotal,
 		BytesOutTotal:     t.BytesOutTotal,
 		CreatedAt:         t.CreatedAt.Unix(),
@@ -156,6 +158,45 @@ func (s *Server) handleUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type updateTunnelSettingsRequest struct {
+	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
+	PublicHostname    string `json:"public_hostname"`
+}
+
+// handleUpdateTunnelSettings sets a tunnel's traffic limit and public
+// hostname — separate from handleUpdateTunnel's enabled toggle since these
+// are always saved together as one "settings" form, not partial patches.
+func (s *Server) handleUpdateTunnelSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req updateTunnelSettingsRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.TrafficLimitBytes != nil && *req.TrafficLimitBytes <= 0 {
+		writeError(w, http.StatusBadRequest, "traffic_limit_bytes must be positive, or omitted/null for unlimited")
+		return
+	}
+	req.PublicHostname = strings.TrimSpace(strings.ToLower(req.PublicHostname))
+	if len(req.PublicHostname) > 253 {
+		writeError(w, http.StatusBadRequest, "public_hostname is too long")
+		return
+	}
+
+	if err := s.DB.UpdateTunnelSettings(id, req.TrafficLimitBytes, req.PublicHostname); err != nil {
+		writeError(w, http.StatusNotFound, "tunnel not found")
+		return
+	}
+
+	t, err := s.DB.GetTunnelByID(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toTunnelView(t))
 }
 
 func (s *Server) handleDeleteTunnel(w http.ResponseWriter, r *http.Request) {

@@ -35,8 +35,63 @@ func Open(path string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateSchema(sqlDB); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 
 	return &DB{sql: sqlDB}, nil
+}
+
+// migrateSchema adds columns to tables that already existed before those
+// columns were added to schema.sql — CREATE TABLE IF NOT EXISTS only
+// creates missing tables, it never alters ones that already exist, so an
+// upgrade needs this to pick up new columns on an already-deployed
+// database. Each entry is idempotent: skipped if the column is already
+// there (a brand-new database gets it straight from schema.sql instead).
+func migrateSchema(sqlDB *sql.DB) error {
+	migrations := []struct{ table, column, ddl string }{
+		{"tunnels", "traffic_limit_bytes", `ALTER TABLE tunnels ADD COLUMN traffic_limit_bytes INTEGER`},
+		{"tunnels", "public_hostname", `ALTER TABLE tunnels ADD COLUMN public_hostname TEXT NOT NULL DEFAULT ''`},
+		{"clients", "traffic_limit_bytes", `ALTER TABLE clients ADD COLUMN traffic_limit_bytes INTEGER`},
+	}
+	for _, m := range migrations {
+		has, err := hasColumn(sqlDB, m.table, m.column)
+		if err != nil {
+			return fmt.Errorf("check %s.%s: %w", m.table, m.column, err)
+		}
+		if has {
+			continue
+		}
+		if _, err := sqlDB.Exec(m.ddl); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", m.table, m.column, err)
+		}
+	}
+	return nil
+}
+
+func hasColumn(sqlDB *sql.DB, table, column string) (bool, error) {
+	// table is always one of our own hardcoded migration entries above,
+	// never external input, so string-formatting it into PRAGMA (which
+	// doesn't support query parameters for identifiers) is safe here.
+	rows, err := sqlDB.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (d *DB) Close() error {
@@ -142,11 +197,12 @@ func (d *DB) ClaimSetupCode(code string) error {
 // --- Clients ---
 
 type Client struct {
-	ID        string
-	Name      string
-	TokenHash string
-	CreatedAt time.Time
-	LastSeen  *time.Time
+	ID                string
+	Name              string
+	TokenHash         string
+	CreatedAt         time.Time
+	LastSeen          *time.Time
+	TrafficLimitBytes *int64
 }
 
 // GenerateToken creates a new random client token and its SHA-256 hash
@@ -209,23 +265,21 @@ func (d *DB) RotateClientToken(clientID string) (string, error) {
 	return token, nil
 }
 
+const clientColumns = `id, name, token_hash, created_at, last_seen, traffic_limit_bytes`
+
 func (d *DB) GetClientByTokenHash(hash string) (Client, error) {
-	return d.scanClient(d.sql.QueryRow(
-		`SELECT id, name, token_hash, created_at, last_seen FROM clients WHERE token_hash = ?`, hash,
-	))
+	return d.scanClient(d.sql.QueryRow(`SELECT `+clientColumns+` FROM clients WHERE token_hash = ?`, hash))
 }
 
 func (d *DB) GetClientByID(id string) (Client, error) {
-	return d.scanClient(d.sql.QueryRow(
-		`SELECT id, name, token_hash, created_at, last_seen FROM clients WHERE id = ?`, id,
-	))
+	return d.scanClient(d.sql.QueryRow(`SELECT `+clientColumns+` FROM clients WHERE id = ?`, id))
 }
 
 func (d *DB) scanClient(row *sql.Row) (Client, error) {
 	var c Client
 	var createdAt int64
-	var lastSeen sql.NullInt64
-	if err := row.Scan(&c.ID, &c.Name, &c.TokenHash, &createdAt, &lastSeen); err != nil {
+	var lastSeen, limit sql.NullInt64
+	if err := row.Scan(&c.ID, &c.Name, &c.TokenHash, &createdAt, &lastSeen, &limit); err != nil {
 		return Client{}, err
 	}
 	c.CreatedAt = time.Unix(createdAt, 0)
@@ -233,11 +287,15 @@ func (d *DB) scanClient(row *sql.Row) (Client, error) {
 		t := time.Unix(lastSeen.Int64, 0)
 		c.LastSeen = &t
 	}
+	if limit.Valid {
+		v := limit.Int64
+		c.TrafficLimitBytes = &v
+	}
 	return c, nil
 }
 
 func (d *DB) ListClients() ([]Client, error) {
-	rows, err := d.sql.Query(`SELECT id, name, token_hash, created_at, last_seen FROM clients ORDER BY created_at`)
+	rows, err := d.sql.Query(`SELECT ` + clientColumns + ` FROM clients ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -247,8 +305,8 @@ func (d *DB) ListClients() ([]Client, error) {
 	for rows.Next() {
 		var c Client
 		var createdAt int64
-		var lastSeen sql.NullInt64
-		if err := rows.Scan(&c.ID, &c.Name, &c.TokenHash, &createdAt, &lastSeen); err != nil {
+		var lastSeen, limit sql.NullInt64
+		if err := rows.Scan(&c.ID, &c.Name, &c.TokenHash, &createdAt, &lastSeen, &limit); err != nil {
 			return nil, err
 		}
 		c.CreatedAt = time.Unix(createdAt, 0)
@@ -256,9 +314,29 @@ func (d *DB) ListClients() ([]Client, error) {
 			t := time.Unix(lastSeen.Int64, 0)
 			c.LastSeen = &t
 		}
+		if limit.Valid {
+			v := limit.Int64
+			c.TrafficLimitBytes = &v
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// UpdateClientTrafficLimit sets (or clears, with nil) a machine-wide
+// traffic limit — the combined total across all of its tunnels. Enforced
+// alongside each tunnel's own limit inside AddTunnelTraffic.
+func (d *DB) UpdateClientTrafficLimit(id string, limitBytes *int64) error {
+	res, err := d.sql.Exec(`UPDATE clients SET traffic_limit_bytes = ? WHERE id = ?`, limitBytes, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // DeleteClient removes a client (cascading its tunnels) and revokes its
@@ -367,6 +445,7 @@ type Tunnel struct {
 	Protocol          string
 	Enabled           bool
 	TrafficLimitBytes *int64
+	PublicHostname    string
 	BytesInTotal      int64
 	BytesOutTotal     int64
 	CreatedAt         time.Time
@@ -398,24 +477,23 @@ func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPor
 	return t, nil
 }
 
+const tunnelColumns = `id, client_id, name, local_host, local_port, public_port, protocol, enabled,
+	traffic_limit_bytes, public_hostname, bytes_in_total, bytes_out_total, created_at`
+
 func (d *DB) ListTunnelsByClient(clientID string) ([]Tunnel, error) {
-	return d.queryTunnels(`SELECT id, client_id, name, local_host, local_port, public_port, protocol, enabled,
-		traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at FROM tunnels WHERE client_id = ? ORDER BY created_at`, clientID)
+	return d.queryTunnels(`SELECT `+tunnelColumns+` FROM tunnels WHERE client_id = ? ORDER BY created_at`, clientID)
 }
 
 func (d *DB) ListAllTunnels() ([]Tunnel, error) {
-	return d.queryTunnels(`SELECT id, client_id, name, local_host, local_port, public_port, protocol, enabled,
-		traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at FROM tunnels ORDER BY created_at`)
+	return d.queryTunnels(`SELECT ` + tunnelColumns + ` FROM tunnels ORDER BY created_at`)
 }
 
 func (d *DB) ListEnabledTunnels() ([]Tunnel, error) {
-	return d.queryTunnels(`SELECT id, client_id, name, local_host, local_port, public_port, protocol, enabled,
-		traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at FROM tunnels WHERE enabled = 1 ORDER BY created_at`)
+	return d.queryTunnels(`SELECT ` + tunnelColumns + ` FROM tunnels WHERE enabled = 1 ORDER BY created_at`)
 }
 
 func (d *DB) GetTunnelByID(id string) (Tunnel, error) {
-	tunnels, err := d.queryTunnels(`SELECT id, client_id, name, local_host, local_port, public_port, protocol, enabled,
-		traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at FROM tunnels WHERE id = ?`, id)
+	tunnels, err := d.queryTunnels(`SELECT `+tunnelColumns+` FROM tunnels WHERE id = ?`, id)
 	if err != nil {
 		return Tunnel{}, err
 	}
@@ -439,7 +517,7 @@ func (d *DB) queryTunnels(query string, args ...any) ([]Tunnel, error) {
 		var limit sql.NullInt64
 		var enabled int
 		if err := rows.Scan(&t.ID, &t.ClientID, &t.Name, &t.LocalHost, &t.LocalPort, &t.PublicPort,
-			&t.Protocol, &enabled, &limit, &t.BytesInTotal, &t.BytesOutTotal, &createdAt); err != nil {
+			&t.Protocol, &enabled, &limit, &t.PublicHostname, &t.BytesInTotal, &t.BytesOutTotal, &createdAt); err != nil {
 			return nil, err
 		}
 		t.Enabled = enabled == 1
@@ -463,8 +541,31 @@ func (d *DB) SetTunnelEnabled(id string, enabled bool) error {
 	return err
 }
 
+// UpdateTunnelSettings sets a tunnel's traffic limit (nil = unlimited) and
+// public hostname (informational only — Portly doesn't manage DNS, this
+// just lets the panel show the DNS records to create for it).
+func (d *DB) UpdateTunnelSettings(id string, trafficLimitBytes *int64, publicHostname string) error {
+	res, err := d.sql.Exec(
+		`UPDATE tunnels SET traffic_limit_bytes = ?, public_hostname = ? WHERE id = ?`,
+		trafficLimitBytes, publicHostname, id,
+	)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // AddTunnelTraffic accumulates byte counters for a tunnel and records a
-// point-in-time sample for historical graphing.
+// point-in-time sample for historical graphing. If this brings the tunnel's
+// own total, or its owning client's combined total across all its tunnels,
+// to its configured traffic limit, the affected tunnel(s) are disabled in
+// the same transaction — reconcileListeners picks up the change and tears
+// down the actual public listener(s) within one reconcile tick.
 func (d *DB) AddTunnelTraffic(tunnelID string, bytesIn, bytesOut int64) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -484,6 +585,39 @@ func (d *DB) AddTunnelTraffic(tunnelID string, bytesIn, bytesOut int64) error {
 	); err != nil {
 		return err
 	}
+
+	var newIn, newOut int64
+	var tunnelLimit sql.NullInt64
+	var clientID string
+	if err := tx.QueryRow(
+		`SELECT bytes_in_total, bytes_out_total, traffic_limit_bytes, client_id FROM tunnels WHERE id = ?`, tunnelID,
+	).Scan(&newIn, &newOut, &tunnelLimit, &clientID); err != nil {
+		return err
+	}
+	if tunnelLimit.Valid && newIn+newOut >= tunnelLimit.Int64 {
+		if _, err := tx.Exec(`UPDATE tunnels SET enabled = 0 WHERE id = ?`, tunnelID); err != nil {
+			return err
+		}
+	}
+
+	var clientLimit sql.NullInt64
+	if err := tx.QueryRow(`SELECT traffic_limit_bytes FROM clients WHERE id = ?`, clientID).Scan(&clientLimit); err != nil {
+		return err
+	}
+	if clientLimit.Valid {
+		var clientTotal int64
+		if err := tx.QueryRow(
+			`SELECT COALESCE(SUM(bytes_in_total + bytes_out_total), 0) FROM tunnels WHERE client_id = ?`, clientID,
+		).Scan(&clientTotal); err != nil {
+			return err
+		}
+		if clientTotal >= clientLimit.Int64 {
+			if _, err := tx.Exec(`UPDATE tunnels SET enabled = 0 WHERE client_id = ?`, clientID); err != nil {
+				return err
+			}
+		}
+	}
+
 	return tx.Commit()
 }
 
