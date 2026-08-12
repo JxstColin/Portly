@@ -53,6 +53,7 @@ func migrateSchema(sqlDB *sql.DB) error {
 	migrations := []struct{ table, column, ddl string }{
 		{"tunnels", "traffic_limit_bytes", `ALTER TABLE tunnels ADD COLUMN traffic_limit_bytes INTEGER`},
 		{"tunnels", "public_hostname", `ALTER TABLE tunnels ADD COLUMN public_hostname TEXT NOT NULL DEFAULT ''`},
+		{"tunnels", "proxy_protocol", `ALTER TABLE tunnels ADD COLUMN proxy_protocol INTEGER NOT NULL DEFAULT 0`},
 		{"clients", "traffic_limit_bytes", `ALTER TABLE clients ADD COLUMN traffic_limit_bytes INTEGER`},
 	}
 	for _, m := range migrations {
@@ -446,6 +447,7 @@ type Tunnel struct {
 	Enabled           bool
 	TrafficLimitBytes *int64
 	PublicHostname    string
+	ProxyProtocol     bool
 	BytesInTotal      int64
 	BytesOutTotal     int64
 	CreatedAt         time.Time
@@ -478,7 +480,7 @@ func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPor
 }
 
 const tunnelColumns = `id, client_id, name, local_host, local_port, public_port, protocol, enabled,
-	traffic_limit_bytes, public_hostname, bytes_in_total, bytes_out_total, created_at`
+	traffic_limit_bytes, public_hostname, proxy_protocol, bytes_in_total, bytes_out_total, created_at`
 
 func (d *DB) ListTunnelsByClient(clientID string) ([]Tunnel, error) {
 	return d.queryTunnels(`SELECT `+tunnelColumns+` FROM tunnels WHERE client_id = ? ORDER BY created_at`, clientID)
@@ -515,12 +517,13 @@ func (d *DB) queryTunnels(query string, args ...any) ([]Tunnel, error) {
 		var t Tunnel
 		var createdAt int64
 		var limit sql.NullInt64
-		var enabled int
+		var enabled, proxyProtocol int
 		if err := rows.Scan(&t.ID, &t.ClientID, &t.Name, &t.LocalHost, &t.LocalPort, &t.PublicPort,
-			&t.Protocol, &enabled, &limit, &t.PublicHostname, &t.BytesInTotal, &t.BytesOutTotal, &createdAt); err != nil {
+			&t.Protocol, &enabled, &limit, &t.PublicHostname, &proxyProtocol, &t.BytesInTotal, &t.BytesOutTotal, &createdAt); err != nil {
 			return nil, err
 		}
 		t.Enabled = enabled == 1
+		t.ProxyProtocol = proxyProtocol == 1
 		if limit.Valid {
 			v := limit.Int64
 			t.TrafficLimitBytes = &v
@@ -541,13 +544,15 @@ func (d *DB) SetTunnelEnabled(id string, enabled bool) error {
 	return err
 }
 
-// UpdateTunnelSettings sets a tunnel's traffic limit (nil = unlimited) and
+// UpdateTunnelSettings sets a tunnel's traffic limit (nil = unlimited),
 // public hostname (informational only — Portly doesn't manage DNS, this
-// just lets the panel show the DNS records to create for it).
-func (d *DB) UpdateTunnelSettings(id string, trafficLimitBytes *int64, publicHostname string) error {
+// just lets the panel show the DNS records to create for it), and whether
+// to prefix the local connection with a PROXY protocol v1 header carrying
+// the real public client's address.
+func (d *DB) UpdateTunnelSettings(id string, trafficLimitBytes *int64, publicHostname string, proxyProtocol bool) error {
 	res, err := d.sql.Exec(
-		`UPDATE tunnels SET traffic_limit_bytes = ?, public_hostname = ? WHERE id = ?`,
-		trafficLimitBytes, publicHostname, id,
+		`UPDATE tunnels SET traffic_limit_bytes = ?, public_hostname = ?, proxy_protocol = ? WHERE id = ?`,
+		trafficLimitBytes, publicHostname, boolToInt(proxyProtocol), id,
 	)
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -45,6 +46,15 @@ const updateScriptPath = "/opt/portly-src/scripts/quickstart-vps.sh"
 // unauthenticated GitHub API request every 15 minutes stays far under its
 // 60-requests/hour rate limit even with "Check now" clicks on top.
 const updateCheckInterval = 15 * time.Minute
+
+// gracefulShutdownTimeout bounds how long a SIGTERM (e.g. from `systemctl
+// restart`, which every update goes through) waits for already-connected
+// players/tunnel traffic to finish naturally before giving up and exiting
+// anyway. Kept comfortably under systemd's default 90s TimeoutStopSec so a
+// slow drain still lets systemd finish the restart on its own rather than
+// SIGKILLing the process. New connections are refused the moment shutdown
+// starts; only already-established ones get this grace period.
+const gracefulShutdownTimeout = 25 * time.Second
 
 // sudoUpdateAllowed probes (without running anything) whether the current
 // user is allowed to run updateScriptPath as root without a password —
@@ -291,27 +301,56 @@ func runCmd() *cobra.Command {
 				}
 			}()
 
+			webSrv := &http.Server{Addr: webAddr, Handler: certManager.HTTPHandler(apiSrv.Router())}
 			go func() {
 				logger.Info("public web listener (API + UI + ACME challenges)", "addr", webAddr)
-				handler := certManager.HTTPHandler(apiSrv.Router())
-				if err := http.ListenAndServe(webAddr, handler); err != nil {
+				if err := webSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 					logger.Error("public web listener stopped", "err", err)
 				}
 			}()
 
+			httpsSrv := &http.Server{
+				Addr:      httpsAddr,
+				Handler:   apiSrv.Router(),
+				TLSConfig: certManager.TLSConfig(),
+			}
 			go func() {
-				httpsSrv := &http.Server{
-					Addr:      httpsAddr,
-					Handler:   apiSrv.Router(),
-					TLSConfig: certManager.TLSConfig(),
-				}
 				logger.Info("public HTTPS listener starting (serves once a domain is configured)", "addr", httpsAddr)
-				if err := httpsSrv.ListenAndServeTLS("", ""); err != nil {
+				if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 					logger.Error("public HTTPS listener stopped", "err", err)
 				}
 			}()
 
-			return srv.Run()
+			sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+			defer stopSignals()
+
+			tunnelErrCh := make(chan error, 1)
+			go func() { tunnelErrCh <- srv.Run() }()
+
+			select {
+			case err := <-tunnelErrCh:
+				return err
+			case <-sigCtx.Done():
+			}
+
+			// A shutdown signal (SIGTERM from `systemctl restart`/`stop`, or
+			// Ctrl-C) arrived. Every already-connected player and already-open
+			// tunnel connection is left completely alone here — only *new*
+			// public/control-plane connections and web requests get refused
+			// from this point on, for up to gracefulShutdownTimeout, so an
+			// update doesn't yank anyone currently playing.
+			logger.Info("shutdown signal received, draining in-flight connections", "timeout", gracefulShutdownTimeout)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+			defer cancel()
+
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("tunnel server drain timed out, some connections may have been cut", "err", err)
+			}
+			webSrv.Shutdown(shutdownCtx)
+			httpsSrv.Shutdown(shutdownCtx)
+
+			logger.Info("shutdown complete")
+			return nil
 		},
 	}
 }

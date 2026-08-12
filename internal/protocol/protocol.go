@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 )
 
 const maxFrameSize = 1 << 20 // 1 MiB, generous headroom for tunnel config pushes
@@ -50,6 +51,16 @@ type TunnelSpec struct {
 	LocalPort  int      `json:"local_port"`
 	PublicPort int      `json:"public_port"`
 	Protocol   Protocol `json:"protocol"`
+	// ProxyProtocol, if set, tells the client to prefix the local connection
+	// with a PROXY protocol v1 header carrying the real public client's
+	// address (from StreamHeader.RemoteAddr) before relaying bytes — so the
+	// local service can see the real player/client IP instead of the
+	// client machine's own loopback/LAN address. Only takes effect if the
+	// local service itself understands PROXY protocol (e.g. Paper's
+	// proxy-protocol setting for Minecraft) — otherwise it'll misinterpret
+	// the header as garbage protocol data and the connection will fail, so
+	// this defaults to off and is opt-in per tunnel.
+	ProxyProtocol bool `json:"proxy_protocol,omitempty"`
 }
 
 // TunnelConfigPush is sent by the server over the dedicated control stream
@@ -71,6 +82,10 @@ type TunnelConfigPush struct {
 // carry many independent public-side senders.
 type StreamHeader struct {
 	TunnelID string `json:"tunnel_id"`
+	// RemoteAddr is the real public client's address (host:port) that
+	// connected to the tunnel's public port, for tunnels with ProxyProtocol
+	// enabled to relay onward via a PROXY protocol v1 header.
+	RemoteAddr string `json:"remote_addr,omitempty"`
 }
 
 // UDPPacket carries one UDP datagram plus the public-side address it came
@@ -95,6 +110,52 @@ type Device struct {
 // scan. It always carries the client's full current device list.
 type DeviceReport struct {
 	Devices []Device `json:"devices"`
+}
+
+// ProxyProtocolV1Header builds a HAProxy PROXY protocol v1 header line
+// (https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) reporting
+// srcAddr (the real public client) connecting through to dstAddr (the
+// tunnel's public address), for a portly-client to write to a local
+// service ahead of relaying raw bytes — so the local service sees the real
+// client address instead of the tunnel connection's own loopback/LAN
+// source. Falls back to "PROXY UNKNOWN\r\n" (valid per the spec) if either
+// address can't be parsed, rather than sending nothing at all: once a
+// tunnel has this enabled, the local service always expects a PROXY line
+// as the very first bytes of every connection.
+func ProxyProtocolV1Header(srcAddr, dstAddr string) string {
+	srcIP, srcPort, err := splitHostPortIP(srcAddr)
+	if err != nil {
+		// Without a real source address there's nothing worth reporting.
+		return "PROXY UNKNOWN\r\n"
+	}
+	family := "TCP4"
+	zero := "0.0.0.0"
+	if srcIP.To4() == nil {
+		family = "TCP6"
+		zero = "::"
+	}
+
+	dstIP, dstPort, err := splitHostPortIP(dstAddr)
+	if err != nil {
+		// The source is still worth sending even if the destination
+		// couldn't be resolved to a literal IP (e.g. --advertise-host set
+		// to a hostname) — an all-zero address in the same family is valid
+		// per the spec and doesn't throw away what actually matters here.
+		dstIP, dstPort = net.ParseIP(zero), "0"
+	}
+	return fmt.Sprintf("PROXY %s %s %s %s %s\r\n", family, srcIP.String(), dstIP.String(), srcPort, dstPort)
+}
+
+func splitHostPortIP(addr string) (net.IP, string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, "", err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, "", fmt.Errorf("invalid ip %q", host)
+	}
+	return ip, port, nil
 }
 
 // WriteFrame writes a length-prefixed JSON-encoded message to w.

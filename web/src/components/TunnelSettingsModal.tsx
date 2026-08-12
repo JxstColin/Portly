@@ -30,6 +30,7 @@ export function TunnelSettingsModal({
     tunnel.traffic_limit_bytes ? String(tunnel.traffic_limit_bytes / gib) : ""
   );
   const [hostname, setHostname] = useState(tunnel.public_hostname ?? "");
+  const [proxyProtocol, setProxyProtocol] = useState(tunnel.proxy_protocol);
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -66,6 +67,7 @@ export function TunnelSettingsModal({
       await api.updateTunnelSettings(tunnel.id, {
         traffic_limit_bytes: limitBytes,
         public_hostname: trimmedHostname,
+        proxy_protocol: proxyProtocol,
       });
       onUpdated();
       onClose();
@@ -137,6 +139,40 @@ export function TunnelSettingsModal({
               <code className="font-mono">{serverInfo?.advertise_host ?? "this server"}:{tunnel.public_port}</code>.
             </p>
           </div>
+
+          {tunnel.protocol === "tcp" && (
+            <div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-[var(--accent)]"
+                  checked={proxyProtocol}
+                  onChange={(e) => setProxyProtocol(e.target.checked)}
+                />
+                Send real player IP (PROXY protocol)
+              </label>
+              <p className="mt-1 text-xs text-foreground-muted">
+                Without this, the local service sees this machine&apos;s own
+                address instead of the actual player&apos;s IP. Only enable it if
+                the local service understands the{" "}
+                <a
+                  href="https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  PROXY protocol
+                </a>{" "}
+                — for Minecraft, that&apos;s Paper&apos;s{" "}
+                <code className="font-mono">proxy-protocol: true</code> setting
+                (not vanilla). Enabling it for anything else breaks the
+                connection outright, since the local service would see the
+                PROXY header as garbage protocol data. Requires
+                portly-client to have picked up this feature (auto-updates
+                within ~15 minutes) before it takes effect.
+              </p>
+            </div>
+          )}
 
           {showDNSHelp && serverInfo && (
             <div className="animate-fade-in rounded-lg border border-border bg-surface-raised p-3 text-xs">
