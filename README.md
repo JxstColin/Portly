@@ -162,31 +162,26 @@ background check finding it, no manual refresh needed. That all works out
 of the box, no setup needed.
 
 An **Update now** button that actually runs the update from the panel
-(instead of you SSHing in and running the one-liner yourself) is enabled
-automatically too. `portly-server` deliberately runs as an unprivileged
+(instead of you SSHing in and running the one-liner yourself) is always
+shown when an update is available — there's no setting for it, and
+nothing to enable. `portly-server` deliberately runs as an unprivileged
 `portly` user, and triggering `git pull` + rebuild + a service restart
-needs root — `quickstart-vps.sh` grants exactly that, via a
-narrowly-scoped passwordless `sudo` rule and nothing more, every time it
-sets up or updates a VPS.
+needs root, so `quickstart-vps.sh` grants exactly that, via a
+narrowly-scoped passwordless `sudo` rule, every single time it sets up or
+updates a VPS — this is how the button (and the panel's own ability to
+update itself at all) works, not an optional extra.
 
 This writes `/etc/sudoers.d/portly-update` with a single rule — `portly`
 may run `/opt/portly-src/scripts/quickstart-vps.sh` (that exact script,
 no arguments, nothing else) as root without a password. `portly` can't
 tamper with what that rule actually executes: nothing under
 `/opt/portly-src` except its `web/` subdirectory is writable by `portly`.
-The rule is validated with `visudo -c` before being installed, and only
+The rule is validated with `visudo -c` before being installed; the script
+prints whether the grant actually succeeded in its final summary. It only
 takes effect for a checkout at the standard `/opt/portly-src` path (the
-one every documented install method produces) — a custom checkout simply
-doesn't get the button, no error.
-
-Don't want the panel to have that access? Revoke it any time with:
-
-```bash
-sudo ./scripts/quickstart-vps.sh --disable-update-button
-```
-
-(it stays off across future re-runs of the script until you remove that
-flag again).
+one every documented install method produces) — from a custom checkout,
+clicking **Update now** returns a clear error explaining that instead of
+silently failing.
 
 Clicking **Update now** runs the exact same process as the manual
 one-liner, as a background process detached from the request that
@@ -356,13 +351,12 @@ all of this in one step.
 - The panel's update checker (Settings → Updates, and the Machines page
   banner) only ever makes read-only `GET` requests to GitHub's public API —
   no credentials sent or required. The **Update now** button that actually
-  triggers an update is enabled by default (see "Updating" above) — that
-  grants the unprivileged `portly` user passwordless root access to exactly
-  one script, at its exact installed path, with no arguments; it cannot be
-  used to run anything else, and `quickstart-vps.sh --disable-update-button`
-  revokes it if you'd rather it not have that. Requests to trigger it that
-  don't come with a valid, logged-in admin session (same auth as every
-  other panel action) are rejected before the sudo rule is ever touched.
+  triggers an update is always shown (see "Updating" above) — it grants the
+  unprivileged `portly` user passwordless root access to exactly one
+  script, at its exact installed path, with no arguments; it cannot be used
+  to run anything else. Requests to trigger it that don't come with a
+  valid, logged-in admin session (same auth as every other panel action)
+  are rejected before the sudo rule is ever touched.
 - Client tokens are 256-bit random values; only their SHA-256 hash is stored
   server-side. The "Add machine" flow never displays the token itself —
   only a short-lived, single-use enrollment code that `portly-client enroll`
@@ -425,8 +419,7 @@ gated first-run bootstrap (no seeded default password), zero-config setup
 from the Settings → Domain page), clean uninstall paths (a VPS uninstall
 script, `portly-client uninstall`, and a panel factory reset), and a panel
 update checker (with a Machines-page banner) plus a one-click **Update
-now** button, gated behind a narrowly-scoped sudo grant enabled by
-default.
+now** button, backed by a narrowly-scoped sudo grant set up automatically.
 
 Ideas for later: traffic quotas/limits with automatic pause, alert delivery
 beyond the in-UI dashboard (e.g. webhooks), Layer-7 HTTP/HTTPS tunnels

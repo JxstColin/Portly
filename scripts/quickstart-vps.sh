@@ -21,11 +21,11 @@
 # update themselves automatically and don't need this re-run for that.
 #
 # The panel's own "Update now" button (which triggers this same update
-# process directly from the web UI) is granted automatically by this
-# script, via a narrowly-scoped passwordless sudo rule (see the
-# SUDOERS_FILE section below for exactly what it grants) — pass
-# --disable-update-button to revoke it if you'd rather always update by
-# SSHing in and re-running this script by hand.
+# process directly from the web UI) is granted every time this script
+# runs, via a narrowly-scoped passwordless sudo rule (see the SUDOERS_FILE
+# section below for exactly what it grants) — there's no way to opt out of
+# this short of not running the script, since the button and this script
+# are how the panel updates itself at all.
 set -euo pipefail
 
 REPO_URL="https://github.com/JxstColin/Portly.git"
@@ -35,7 +35,6 @@ WEB_PORT=80
 HTTPS_PORT=443
 LOCAL_WEB_PORT=3000
 NODE_MAJOR=20
-DISABLE_UPDATE_BUTTON=0
 SUDOERS_FILE=/etc/sudoers.d/portly-update
 
 log() { echo "[quickstart] $*"; }
@@ -46,10 +45,6 @@ while [ $# -gt 0 ]; do
 	--control-port) CONTROL_PORT="$2"; shift 2 ;;
 	--web-port) WEB_PORT="$2"; shift 2 ;;
 	--https-port) HTTPS_PORT="$2"; shift 2 ;;
-	# The update button is on by default now; this flag is kept as a no-op
-	# so older documented/scripted invocations don't start failing.
-	--enable-update-button) log "note: the update button is on by default now — --enable-update-button is a no-op."; shift ;;
-	--disable-update-button) DISABLE_UPDATE_BUTTON=1; shift ;;
 	*) die "unknown argument: $1 (host/domain are no longer passed here — set a domain in the web UI once it's running)" ;;
 	esac
 done
@@ -140,11 +135,9 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-if [ "$DISABLE_UPDATE_BUTTON" -eq 1 ]; then
-	log "revoking one-click update permission..."
-	rm -f "$SUDOERS_FILE"
-elif [ "$SRC_DIR" != "$DEFAULT_SRC_DIR" ]; then
-	log "skipping one-click update grant: requires the standard checkout at $DEFAULT_SRC_DIR (portly-server only ever checks for a sudo grant on that exact path) — re-run via the curl one-liner from the README to get it"
+if [ "$SRC_DIR" != "$DEFAULT_SRC_DIR" ]; then
+	UPDATE_BUTTON_STATUS="NOT enabled — this checkout is at $SRC_DIR, not the standard $DEFAULT_SRC_DIR that portly-server checks for a sudo grant at. Re-run via the curl one-liner from the README (not from a custom checkout) to get it."
+	log "WARNING: $UPDATE_BUTTON_STATUS"
 else
 	log "granting the panel permission to trigger updates directly..."
 	# Exactly one command, no arguments, run as root, no password — the
@@ -155,12 +148,15 @@ else
 	SUDOERS_TMP="$(mktemp)"
 	echo "portly ALL=(root) NOPASSWD: ${SRC_DIR}/scripts/quickstart-vps.sh" >"$SUDOERS_TMP"
 	chmod 0440 "$SUDOERS_TMP"
-	if visudo -c -f "$SUDOERS_TMP" >/dev/null 2>&1; then
+	VISUDO_ERR="$(visudo -c -f "$SUDOERS_TMP" 2>&1 >/dev/null || true)"
+	if [ -z "$VISUDO_ERR" ]; then
 		mv "$SUDOERS_TMP" "$SUDOERS_FILE"
+		UPDATE_BUTTON_STATUS="enabled"
 		log "one-click update enabled."
 	else
 		rm -f "$SUDOERS_TMP"
-		log "warning: generated sudoers rule failed validation — one-click update NOT enabled"
+		UPDATE_BUTTON_STATUS="NOT enabled — generated sudoers rule failed validation: $VISUDO_ERR"
+		log "WARNING: $UPDATE_BUTTON_STATUS"
 	fi
 fi
 
@@ -169,9 +165,9 @@ systemctl enable portly-server
 # 'enable --now' only starts a service that isn't already running — on a
 # re-run (update) it would silently leave the old binary's process alive
 # in memory even though we just replaced /usr/local/bin/portly-server on
-# disk, so restart explicitly every time instead. This also picks up any
-# --enable-update-button/--disable-update-button change made just above,
-# since portly-server only checks for the sudo grant at startup.
+# disk, so restart explicitly every time instead. This also picks up the
+# sudo grant made just above, since portly-server only checks for it at
+# startup.
 systemctl restart portly-server
 
 log "building the web UI (this can take a minute)..."
@@ -221,6 +217,8 @@ PUBLIC_IP="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || echo "
 log "done."
 echo ""
 echo "Panel: http://${PUBLIC_IP}"
+echo ""
+echo "Panel's one-click Update now button: ${UPDATE_BUTTON_STATUS}"
 echo ""
 SETUP_CODE_FILE=/var/lib/portly/setup-code.txt
 if [ -f "$SETUP_CODE_FILE" ]; then

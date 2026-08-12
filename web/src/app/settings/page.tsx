@@ -554,7 +554,7 @@ function UpdatesTab() {
                 {checking ? "Checking…" : "Check now"}
               </button>
 
-              {status.update_available && status.can_apply && (
+              {status.update_available && (
                 <button
                   onClick={onApply}
                   disabled={applying}
@@ -571,18 +571,6 @@ function UpdatesTab() {
                 briefly unreachable while the server restarts, then this page
                 refreshes automatically.
               </p>
-            )}
-
-            {status.update_available && !status.can_apply && (
-              <div className="mt-4 animate-fade-in rounded-lg border border-border bg-surface-raised p-3 text-xs text-foreground-secondary">
-                One-click update isn&apos;t enabled on this server (this is
-                the case for custom checkouts, or if it was turned off via{" "}
-                <code className="font-mono">--disable-update-button</code>).
-                Run this on the VPS instead:
-                <code className="mt-2 block break-all rounded bg-surface px-2 py-1.5 font-mono">
-                  {'curl -fsSL "https://raw.githubusercontent.com/JxstColin/Portly/main/scripts/quickstart-vps.sh?$(date +%s)" | sudo bash'}
-                </code>
-              </div>
             )}
 
             {error && (
