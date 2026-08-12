@@ -74,6 +74,7 @@ export interface Tunnel {
   enabled: boolean;
   traffic_limit_bytes?: number;
   public_hostname?: string;
+  proxy_protocol: boolean;
   bytes_in_total: number;
   bytes_out_total: number;
   created_at: number;
@@ -189,7 +190,7 @@ export const api = {
     }),
   updateTunnelSettings: (
     id: string,
-    params: { traffic_limit_bytes: number | null; public_hostname: string }
+    params: { traffic_limit_bytes: number | null; public_hostname: string; proxy_protocol: boolean }
   ) =>
     request<Tunnel>(`/api/tunnels/${id}/settings`, {
       method: "PATCH",

@@ -6,6 +6,7 @@
 package tunnel
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -44,6 +45,19 @@ type Server struct {
 
 	devicesMu sync.RWMutex
 	devices   map[string][]protocol.Device // client ID -> last reported LAN devices
+
+	controlLnMu sync.Mutex
+	controlLn   net.Listener // set once Run's Accept loop is up, for Shutdown to close
+
+	shutdownOnce sync.Once
+	shutdownCh   chan struct{} // closed by Shutdown; reconcileLoop/reconcileListeners stop reacting once closed
+
+	// activeConns tracks in-flight proxied TCP connections (one per actual
+	// player/game-client socket) — Shutdown waits for this to drain instead
+	// of just severing everyone the instant the process is asked to stop,
+	// so a restart/update only refuses *new* connections during the grace
+	// window instead of kicking everyone already playing.
+	activeConns sync.WaitGroup
 }
 
 type clientSession struct {
@@ -81,17 +95,23 @@ func NewServer(database *db.DB, tlsConfig *tls.Config, controlAddr string, logge
 		listeners:   make(map[string]*publicListener),
 		liveBytes:   make(map[string]*liveCounter),
 		devices:     make(map[string][]protocol.Device),
+		shutdownCh:  make(chan struct{}),
 	}
 }
 
 // Run starts the control-plane listener and the reconciliation/traffic
-// loops. It blocks until the listener fails or the process is terminated.
+// loops. It blocks until the listener fails, Shutdown is called, or the
+// process is terminated.
 func (s *Server) Run() error {
 	ln, err := tls.Listen("tcp", s.ControlAddr, s.TLSConfig)
 	if err != nil {
 		return fmt.Errorf("listen control addr: %w", err)
 	}
 	defer ln.Close()
+
+	s.controlLnMu.Lock()
+	s.controlLn = ln
+	s.controlLnMu.Unlock()
 
 	s.Log.Info("control-plane listening", "addr", s.ControlAddr)
 
@@ -101,9 +121,55 @@ func (s *Server) Run() error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			return fmt.Errorf("accept: %w", err)
+			select {
+			case <-s.shutdownCh:
+				// Expected: Shutdown closed the listener on purpose.
+				// Already-connected client sessions and the player
+				// connections flowing through them are untouched by this.
+				return nil
+			default:
+				return fmt.Errorf("accept: %w", err)
+			}
 		}
 		go s.handleConn(conn)
+	}
+}
+
+// Shutdown stops accepting new client-machine and player connections, then
+// waits (up to ctx's deadline) for already-established player connections
+// to finish naturally before returning. It deliberately does NOT touch
+// existing client-machine sessions or their in-flight proxied streams —
+// those keep working right up until either they end on their own or ctx's
+// deadline passes, so a restart/update only refuses brand-new connections
+// during the drain window instead of severing everyone already playing.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownOnce.Do(func() { close(s.shutdownCh) })
+
+	s.controlLnMu.Lock()
+	if s.controlLn != nil {
+		s.controlLn.Close()
+	}
+	s.controlLnMu.Unlock()
+
+	s.listenersMu.Lock()
+	for id, pl := range s.listeners {
+		pl.cancel()
+		pl.closer.Close()
+		delete(s.listeners, id)
+	}
+	s.listenersMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.activeConns.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -277,14 +343,15 @@ func (s *Server) pushTunnelConfig(cs *clientSession) {
 			continue
 		}
 		specs = append(specs, protocol.TunnelSpec{
-			ID:         t.ID,
-			Name:       t.Name,
-			LocalHost:  t.LocalHost,
-			LocalPort:  t.LocalPort,
-			PublicPort: t.PublicPort,
-			Protocol:   protocol.Protocol(t.Protocol),
+			ID:            t.ID,
+			Name:          t.Name,
+			LocalHost:     t.LocalHost,
+			LocalPort:     t.LocalPort,
+			PublicPort:    t.PublicPort,
+			Protocol:      protocol.Protocol(t.Protocol),
+			ProxyProtocol: t.ProxyProtocol,
 		})
-		fingerprint += fmt.Sprintf("%s:%s:%d:%s;", t.ID, t.LocalHost, t.LocalPort, t.Protocol)
+		fingerprint += fmt.Sprintf("%s:%s:%d:%s:%t;", t.ID, t.LocalHost, t.LocalPort, t.Protocol, t.ProxyProtocol)
 	}
 
 	if fingerprint == cs.lastPushed {
@@ -310,9 +377,14 @@ func (s *Server) reconcileLoop() {
 	defer ticker.Stop()
 
 	s.reconcileListeners()
-	for range ticker.C {
-		s.reconcileListeners()
-		s.reconcileClientConfigs()
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case <-ticker.C:
+			s.reconcileListeners()
+			s.reconcileClientConfigs()
+		}
 	}
 }
 
@@ -330,6 +402,15 @@ func (s *Server) reconcileClientConfigs() {
 }
 
 func (s *Server) reconcileListeners() {
+	select {
+	case <-s.shutdownCh:
+		// Shutdown already closed every listener on purpose — never race
+		// against it and re-open one for a tunnel that's still enabled in
+		// the DB (a tick could otherwise land concurrently with Shutdown).
+		return
+	default:
+	}
+
 	tunnels, err := s.DB.ListEnabledTunnels()
 	if err != nil {
 		s.Log.Error("list enabled tunnels failed", "err", err)
@@ -428,6 +509,12 @@ func (s *Server) startTCPListener(t db.Tunnel) (*publicListener, error) {
 func (s *Server) proxyConn(t db.Tunnel, publicConn net.Conn) {
 	defer publicConn.Close()
 
+	// Tracked so Shutdown can wait for every already-accepted player
+	// connection to finish naturally instead of severing it — this is
+	// exactly what makes an update/restart not kick anyone already playing.
+	s.activeConns.Add(1)
+	defer s.activeConns.Done()
+
 	s.mu.RLock()
 	cs, ok := s.sessions[t.ClientID]
 	s.mu.RUnlock()
@@ -443,7 +530,7 @@ func (s *Server) proxyConn(t db.Tunnel, publicConn net.Conn) {
 	}
 	defer stream.Close()
 
-	if err := protocol.WriteFrame(stream, protocol.StreamHeader{TunnelID: t.ID}); err != nil {
+	if err := protocol.WriteFrame(stream, protocol.StreamHeader{TunnelID: t.ID, RemoteAddr: publicConn.RemoteAddr().String()}); err != nil {
 		s.Log.Warn("write stream header failed", "tunnel", t.Name, "err", err)
 		return
 	}

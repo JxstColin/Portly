@@ -144,6 +144,16 @@ Each machine and each tunnel has a **Settings** button for optional extras:
   of `<vps-ip>:25566`. For protocols with SRV-record support (Minecraft
   being the common one), it also gives you the SRV record needed to drop
   the port entirely.
+- **Send real player IP** (tunnel settings only, TCP tunnels) — without
+  this, the local service sees the tunnel connection's own address instead
+  of the actual player's IP, since it's the machine running `portly-client`
+  that's really connecting to it. Enabling this makes `portly-client`
+  prefix each connection with a
+  [PROXY protocol v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt)
+  header carrying the real client address — but only turn it on if the
+  local service actually understands PROXY protocol (for Minecraft, that's
+  Paper's `proxy-protocol: true` setting, not vanilla), since anything else
+  will see the header as garbage protocol data and refuse the connection.
 
 ## Updating
 
@@ -158,6 +168,15 @@ It pulls the latest code, rebuilds `portly-server` and the web UI, and
 restarts both services in place. Already-cloned the repo? `git pull &&
 sudo ./scripts/quickstart-vps.sh` from its root does the same thing
 without going through GitHub's raw-content CDN.
+
+That restart doesn't disconnect anyone already playing: `portly-server`
+handles the stop signal by refusing brand-new connections immediately but
+leaving every already-connected player's tunnel completely alone, for up
+to 25 seconds, while the new binary starts up in its place. A session that
+outlasts that window still gets cut when the grace period runs out — there
+isn't a way around that for an update that genuinely needs the process to
+restart — but the common case (an update landing while people are
+mid-session) no longer kicks them.
 
 **Machines (`portly-client`):** nothing to do — every enrolled machine
 checks the VPS for a newer client binary roughly every 15 minutes (with a

@@ -281,5 +281,36 @@ func (c *Client) handleDataStream(stream net.Conn) {
 	}
 	defer localConn.Close()
 
+	if spec.ProxyProtocol {
+		if _, err := localConn.Write([]byte(protocol.ProxyProtocolV1Header(hdr.RemoteAddr, c.publicDstAddr(spec.PublicPort)))); err != nil {
+			c.Log.Warn("write proxy protocol header failed", "tunnel", spec.Name, "err", err)
+			return
+		}
+	}
+
 	pipe(localConn, stream, new(int64), new(int64))
+}
+
+// publicDstAddr reconstructs the address the original public client
+// connected to (the tunnel's public port on the VPS, not this machine's
+// local target) — used as the PROXY protocol header's destination field.
+// --advertise-host (and so ServerAddr's host part) is usually already a
+// literal IP, but resolves it via DNS if it's a hostname instead, since
+// PROXY protocol v1 requires a literal IP, not a name. Returns "" (which
+// ProxyProtocolV1Header treats as "destination unknown", not as a reason
+// to discard the — far more important — real source address) if the host
+// can't be parsed or resolved at all.
+func (c *Client) publicDstAddr(publicPort int) string {
+	host, _, err := net.SplitHostPort(c.ServerAddr)
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return net.JoinHostPort(host, fmt.Sprintf("%d", publicPort))
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil || len(addrs) == 0 {
+		return ""
+	}
+	return net.JoinHostPort(addrs[0], fmt.Sprintf("%d", publicPort))
 }

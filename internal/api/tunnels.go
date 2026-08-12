@@ -19,6 +19,7 @@ type tunnelView struct {
 	Enabled           bool   `json:"enabled"`
 	TrafficLimitBytes *int64 `json:"traffic_limit_bytes,omitempty"`
 	PublicHostname    string `json:"public_hostname,omitempty"`
+	ProxyProtocol     bool   `json:"proxy_protocol"`
 	BytesInTotal      int64  `json:"bytes_in_total"`
 	BytesOutTotal     int64  `json:"bytes_out_total"`
 	CreatedAt         int64  `json:"created_at"`
@@ -36,6 +37,7 @@ func toTunnelView(t db.Tunnel) tunnelView {
 		Enabled:           t.Enabled,
 		TrafficLimitBytes: t.TrafficLimitBytes,
 		PublicHostname:    t.PublicHostname,
+		ProxyProtocol:     t.ProxyProtocol,
 		BytesInTotal:      t.BytesInTotal,
 		BytesOutTotal:     t.BytesOutTotal,
 		CreatedAt:         t.CreatedAt.Unix(),
@@ -163,11 +165,13 @@ func (s *Server) handleUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 type updateTunnelSettingsRequest struct {
 	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
 	PublicHostname    string `json:"public_hostname"`
+	ProxyProtocol     bool   `json:"proxy_protocol"`
 }
 
-// handleUpdateTunnelSettings sets a tunnel's traffic limit and public
-// hostname — separate from handleUpdateTunnel's enabled toggle since these
-// are always saved together as one "settings" form, not partial patches.
+// handleUpdateTunnelSettings sets a tunnel's traffic limit, public
+// hostname, and PROXY protocol toggle — separate from handleUpdateTunnel's
+// enabled toggle since these are always saved together as one "settings"
+// form, not partial patches.
 func (s *Server) handleUpdateTunnelSettings(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -186,7 +190,7 @@ func (s *Server) handleUpdateTunnelSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := s.DB.UpdateTunnelSettings(id, req.TrafficLimitBytes, req.PublicHostname); err != nil {
+	if err := s.DB.UpdateTunnelSettings(id, req.TrafficLimitBytes, req.PublicHostname, req.ProxyProtocol); err != nil {
 		writeError(w, http.StatusNotFound, "tunnel not found")
 		return
 	}
