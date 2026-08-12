@@ -32,10 +32,10 @@ import (
 // which disables the update checker entirely (see updatecheck.Check).
 var buildCommit = "dev"
 
-// updateScriptPath is the script the one-click update sudo grant (if
-// enabled via quickstart-vps.sh --enable-update-button) permits the
-// 'portly' user to run as root, with no arguments. Must match exactly what
-// that flag writes to /etc/sudoers.d/portly-update.
+// updateScriptPath is the script the one-click update sudo grant (written
+// by quickstart-vps.sh on every run) permits the 'portly' user to run as
+// root, with no arguments. Must match exactly what that script writes to
+// /etc/sudoers.d/portly-update.
 const updateScriptPath = "/opt/portly-src/scripts/quickstart-vps.sh"
 
 // updateCheckInterval is how often the panel re-checks GitHub for a newer
@@ -48,7 +48,11 @@ const updateCheckInterval = 15 * time.Minute
 
 // sudoUpdateAllowed probes (without running anything) whether the current
 // user is allowed to run updateScriptPath as root without a password —
-// i.e. whether quickstart-vps.sh --enable-update-button was ever run here.
+// i.e. whether quickstart-vps.sh has successfully written the sudoers
+// grant on this machine. The "Update now" button is always shown in the
+// panel regardless of this; triggerUpdate calls it right before actually
+// attempting the update so a genuinely missing grant produces one clear,
+// specific error instead of the button just silently not being there.
 func sudoUpdateAllowed() bool {
 	return exec.Command("sudo", "-n", "-l", updateScriptPath).Run() == nil
 }
@@ -58,6 +62,10 @@ func sudoUpdateAllowed() bool {
 // server process itself gets killed partway through, when the script
 // restarts portly-server, and the update must keep running after that.
 func triggerUpdate(dataDir string) error {
+	if !sudoUpdateAllowed() {
+		return fmt.Errorf("passwordless sudo for %s isn't granted to this user — SSH in and re-run the quickstart-vps.sh installer/updater once (see README) to set it up, then try again", updateScriptPath)
+	}
+
 	logPath := filepath.Join(dataDir, "update.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -264,10 +272,10 @@ func runCmd() *cobra.Command {
 			}
 
 			apiSrv.BuildCommit = buildCommit
-			if sudoUpdateAllowed() {
-				apiSrv.ApplyUpdate = func() error { return triggerUpdate(dataDir) }
-				logger.Info("one-click update is enabled")
-			}
+			// Always wired up — triggerUpdate itself checks the sudo grant
+			// and returns a clear error if it's missing, rather than the
+			// button disappearing with no explanation (see sudoUpdateAllowed).
+			apiSrv.ApplyUpdate = func() error { return triggerUpdate(dataDir) }
 			apiSrv.SetUpdateStatus(updatecheck.Check(context.Background(), buildCommit))
 			go func() {
 				ticker := time.NewTicker(updateCheckInterval)

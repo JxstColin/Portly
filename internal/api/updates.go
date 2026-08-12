@@ -8,9 +8,12 @@ import (
 
 type updateStatusResponse struct {
 	updatecheck.Status
-	// CanApply reports whether ApplyUpdate is wired up at all (i.e. the
-	// one-click-update sudo grant was detected at startup) — the UI uses
-	// this to show either an "Update now" button or manual instructions.
+	// CanApply reports whether ApplyUpdate is wired up at all. cmd/portly-server
+	// always wires it up; this only ever comes back false for an embedder that
+	// doesn't set Server.ApplyUpdate at all (e.g. a dev/test build) — the
+	// actual sudo-grant check happens per-attempt inside ApplyUpdate itself,
+	// so a missing grant surfaces as a specific error from clicking "Update
+	// now" rather than the button not being shown.
 	CanApply bool `json:"can_apply"`
 }
 
@@ -38,7 +41,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 // itself gets restarted partway through and won't be around to answer.
 func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.ApplyUpdate == nil {
-		writeError(w, http.StatusNotImplemented, "one-click update isn't enabled on this server — see the README for how to enable it, or update manually")
+		writeError(w, http.StatusNotImplemented, "one-click update isn't wired up on this server build — update manually instead")
 		return
 	}
 	if err := s.ApplyUpdate(); err != nil {
