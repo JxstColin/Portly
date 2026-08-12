@@ -63,9 +63,9 @@ const triggerClasses =
 // device's IP + MAC) into illegibility — capped so it can't blow out past a
 // narrow form column's siblings.
 const panelClasses =
-  "absolute left-0 z-20 mt-1 max-h-56 min-w-full w-max max-w-[18rem] overflow-auto rounded-lg border border-border bg-surface-raised py-1 shadow-lg";
+  "absolute left-0 z-20 mt-1 max-h-56 min-w-full w-max max-w-[18rem] animate-scale-in overflow-auto rounded-lg border border-border bg-surface-raised py-1 shadow-lg";
 const optionClasses =
-  "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm hover:bg-surface";
+  "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface";
 
 export interface SelectOption<T extends string = string> {
   value: T;
@@ -174,7 +174,7 @@ export function Combobox({
           type="button"
           tabIndex={-1}
           onClick={() => setOpen((v) => !v)}
-          className="rounded p-1 text-foreground-muted hover:text-foreground"
+          className="rounded p-1 text-foreground-muted transition-colors hover:text-foreground"
         >
           <ChevronIcon open={open} />
         </button>

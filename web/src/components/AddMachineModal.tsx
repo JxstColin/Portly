@@ -82,8 +82,8 @@ export function AddMachineModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-lg">
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/40 px-4">
+      <div className="w-full max-w-lg animate-scale-in rounded-xl border border-border bg-surface p-6 shadow-lg">
         {reissueFor && !result ? (
           <>
             <h2 className="text-lg font-semibold">Install command for {reissueFor.name}</h2>
@@ -93,7 +93,7 @@ export function AddMachineModal({
                 <div className="mt-5 flex justify-end">
                   <button
                     onClick={onClose}
-                    className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary hover:bg-surface-raised"
+                    className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary transition-colors hover:bg-surface-raised"
                   >
                     Close
                   </button>
@@ -128,14 +128,14 @@ export function AddMachineModal({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary hover:bg-surface-raised"
+                  className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary transition-colors hover:bg-surface-raised"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+                  className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
                 >
                   {submitting ? "Creating…" : "Create"}
                 </button>
@@ -157,7 +157,7 @@ export function AddMachineModal({
               </code>
               <button
                 onClick={copyCommand}
-                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs hover:bg-surface"
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs transition-colors hover:bg-surface"
               >
                 {copied ? "Copied" : "Copy"}
               </button>
@@ -167,10 +167,10 @@ export function AddMachineModal({
               {connected ? (
                 <>
                   <span
-                    className="h-2 w-2 rounded-full"
+                    className="h-2 w-2 animate-scale-in rounded-full"
                     style={{ background: "var(--status-good)" }}
                   />
-                  <span style={{ color: "var(--status-good-text)" }}>
+                  <span className="animate-fade-in" style={{ color: "var(--status-good-text)" }}>
                     Connected! You can close this dialog.
                   </span>
                 </>
@@ -187,7 +187,7 @@ export function AddMachineModal({
             <div className="mt-5 flex justify-end">
               <button
                 onClick={onClose}
-                className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)]"
+                className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)]"
               >
                 {connected ? "Done" : "Close"}
               </button>

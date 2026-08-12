@@ -92,7 +92,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
 
   return (
     <div>
-      <Link href="/dashboard" className="text-sm text-foreground-muted hover:text-accent">
+      <Link href="/dashboard" className="text-sm text-foreground-muted transition-colors hover:text-accent">
         ← Machines
       </Link>
 
@@ -109,7 +109,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
         </div>
         <button
           onClick={() => setShowAddTunnel(true)}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)]"
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)]"
         >
           Add tunnel
         </button>
@@ -175,7 +175,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => toggleTunnel(t)}
-                        className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                        className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
                           t.enabled
                             ? "bg-[color:var(--status-good)]/15 text-[color:var(--status-good-text)]"
                             : "bg-foreground-muted/15 text-foreground-muted"
@@ -187,7 +187,7 @@ function ClientDetail({ clientId }: { clientId: string }) {
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => setDeleteTunnel(t)}
-                        className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
+                        className="text-xs text-foreground-muted transition-colors hover:text-[color:var(--status-critical)]"
                       >
                         Delete
                       </button>

@@ -69,7 +69,7 @@ function DashboardContent() {
       {updateStatus?.update_available && (
         <Link
           href="/settings?tab=updates"
-          className="mb-4 flex items-center justify-between rounded-lg border border-[color:var(--accent)]/40 bg-accent/10 px-4 py-2.5 text-sm hover:bg-accent/15"
+          className="mb-4 flex animate-slide-down items-center justify-between rounded-lg border border-[color:var(--accent)]/40 bg-accent/10 px-4 py-2.5 text-sm transition-colors hover:bg-accent/15"
         >
           <span className="text-foreground-secondary">
             A Portly update is available.
@@ -81,7 +81,7 @@ function DashboardContent() {
       {setup && !setup.domain && (
         <Link
           href="/settings?tab=domain"
-          className="mb-4 flex items-center justify-between rounded-lg border border-border bg-surface px-4 py-2.5 text-sm hover:bg-surface-raised"
+          className="mb-4 flex animate-slide-down items-center justify-between rounded-lg border border-border bg-surface px-4 py-2.5 text-sm transition-colors hover:bg-surface-raised"
         >
           <span className="text-foreground-secondary">
             You&apos;re on <code className="font-mono">{setup.public_ip}</code> — add a
@@ -95,7 +95,7 @@ function DashboardContent() {
         <h1 className="text-xl font-semibold tracking-tight">Machines</h1>
         <button
           onClick={() => setShowAddModal(true)}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)]"
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)]"
         >
           Add machine
         </button>
@@ -124,11 +124,14 @@ function DashboardContent() {
             </thead>
             <tbody>
               {clients.map((c) => (
-                <tr key={c.id} className="border-b border-border last:border-0">
+                <tr
+                  key={c.id}
+                  className="border-b border-border transition-colors last:border-0 hover:bg-surface-raised"
+                >
                   <td className="px-4 py-3">
                     <Link
                       href={`/dashboard/clients/${c.id}`}
-                      className="font-medium hover:text-accent"
+                      className="font-medium transition-colors hover:text-accent"
                     >
                       {c.name}
                     </Link>
@@ -144,14 +147,14 @@ function DashboardContent() {
                       {!c.last_seen && (
                         <button
                           onClick={() => setReissueClient(c)}
-                          className="text-xs text-foreground-muted hover:text-accent"
+                          className="text-xs text-foreground-muted transition-colors hover:text-accent"
                         >
                           Get install command
                         </button>
                       )}
                       <button
                         onClick={() => setDeleteClient(c)}
-                        className="text-xs text-foreground-muted hover:text-[color:var(--status-critical)]"
+                        className="text-xs text-foreground-muted transition-colors hover:text-[color:var(--status-critical)]"
                       >
                         Delete
                       </button>

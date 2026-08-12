@@ -79,8 +79,8 @@ export function AddTunnelForm({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-2xl rounded-xl border border-border bg-surface p-6 shadow-lg">
+    <div className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/40 px-4">
+      <div className="w-full max-w-2xl animate-scale-in rounded-xl border border-border bg-surface p-6 shadow-lg">
         <h2 className="text-lg font-semibold">Add tunnel</h2>
         <p className="mt-1 text-sm text-foreground-secondary">
           Expose a port on this machine through the tunnel server.
@@ -148,14 +148,14 @@ export function AddTunnelForm({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary hover:bg-surface-raised"
+              className="rounded-lg border border-border px-4 py-2 text-sm text-foreground-secondary transition-colors hover:bg-surface-raised"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
             >
               {submitting ? "Creating…" : "Create tunnel"}
             </button>
