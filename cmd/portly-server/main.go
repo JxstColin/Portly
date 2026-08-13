@@ -278,6 +278,7 @@ func runCmd() *cobra.Command {
 			}
 
 			apiSrv.BuildCommit = buildCommit
+			apiSrv.DataDir = dataDir
 			// Always wired up — triggerUpdate itself checks the sudo grant
 			// and returns a clear error if it's missing, rather than the
 			// button disappearing with no explanation (see sudoUpdateAllowed).

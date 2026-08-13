@@ -112,6 +112,18 @@ export interface UpdateStatus {
   can_apply: boolean;
 }
 
+export type UpdateRunStatus = "" | "running" | "done" | "failed";
+
+export interface UpdateProgress {
+  status: UpdateRunStatus;
+  stage?: number;
+  total_stages?: number;
+  label?: string;
+  started_at?: string;
+  updated_at?: string;
+  log_tail?: string;
+}
+
 export type CertState = "" | "pending" | "ready" | "error";
 
 export interface SetupStatus {
@@ -218,6 +230,10 @@ export const api = {
   getUpdateStatus: () => request<UpdateStatus>("/api/settings/update-status"),
   checkUpdate: () => request<UpdateStatus>("/api/settings/check-update", { method: "POST" }),
   applyUpdate: () => request<void>("/api/settings/apply-update", { method: "POST" }),
+  // Unauthenticated on the server (see internal/api/updates.go) so it keeps
+  // working across the session-wiping restart an update triggers partway
+  // through, and even if the panel gets refreshed while that's happening.
+  getUpdateProgress: () => request<UpdateProgress>("/api/settings/update-progress"),
 };
 
 export interface LiveTunnelStat {

@@ -68,16 +68,21 @@ type Server struct {
 	// code the same way it does on a brand new install.
 	OnFactoryReset func()
 
-	// ApplyUpdate, if set by main.go (only when the one-click-update sudo
-	// grant is actually present — see README), triggers the real update
-	// process (git pull, rebuild, service restart) as a detached background
-	// process and returns once it's been started, not once it's finished:
-	// the server itself gets restarted partway through. nil means one-click
-	// update isn't enabled on this install.
+	// ApplyUpdate, if set by main.go, requests an update by writing the
+	// marker file portly-update.path watches (see cmd/portly-server's
+	// triggerUpdate) and returns once that request has been recorded, not
+	// once the update itself is finished — the server gets restarted
+	// partway through, so nothing here waits around for that. nil means
+	// this server build has no updater wired up at all (a dev/test build).
 	ApplyUpdate func() error
 	// BuildCommit is the git commit this binary was built from (see
 	// cmd/portly-server's buildCommit), used for on-demand update checks.
 	BuildCommit string
+	// DataDir is where scripts/quickstart-vps.sh writes update-progress.json
+	// and update.log while an update runs, so handleUpdateProgress can read
+	// them straight off disk — the one channel that survives the restart
+	// ApplyUpdate triggers partway through every update.
+	DataDir string
 
 	sessMu   sync.Mutex
 	sessions map[string]sessionInfo
@@ -200,6 +205,8 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/settings/update-status", s.requireAuth(s.handleUpdateStatus))
 	mux.HandleFunc("POST /api/settings/check-update", s.requireAuth(s.handleCheckUpdate))
 	mux.HandleFunc("POST /api/settings/apply-update", s.requireAuth(s.handleApplyUpdate))
+	// Deliberately NOT behind requireAuth — see handleUpdateProgress.
+	mux.HandleFunc("GET /api/settings/update-progress", s.handleUpdateProgress)
 
 	if s.WebUpstream != "" {
 		if target, err := url.Parse(s.WebUpstream); err == nil {
