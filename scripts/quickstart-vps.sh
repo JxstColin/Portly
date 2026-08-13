@@ -28,6 +28,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/JxstColin/Portly.git"
 DEFAULT_SRC_DIR="/opt/portly-src"
+DATA_DIR=/var/lib/portly
 CONTROL_PORT=7000
 WEB_PORT=80
 HTTPS_PORT=443
@@ -36,7 +37,15 @@ NODE_MAJOR=20
 # Written by portly-server (the one path it can write to) to request an
 # update; watched by portly-update.path. Must match updateTriggerFileName
 # in cmd/portly-server/main.go.
-UPDATE_TRIGGER_FILE=/var/lib/portly/update-requested
+UPDATE_TRIGGER_FILE="$DATA_DIR/update-requested"
+# Progress/log this script writes about itself as it runs, independent of
+# whichever portly-server binary happens to be running — it gets restarted
+# partway through every update, so anything kept in memory there would
+# vanish right when the panel's "Portly is updating" screen needs it most.
+# Read by GET /api/settings/update-progress (internal/api/updates.go),
+# which is deliberately not behind auth for the same reason.
+UPDATE_PROGRESS_FILE="$DATA_DIR/update-progress.json"
+UPDATE_LOG_FILE="$DATA_DIR/update.log"
 SUDOERS_FILE=/etc/sudoers.d/portly-update # legacy, removed below
 
 log() { echo "[quickstart] $*"; }
@@ -53,7 +62,39 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 
+# From here on, everything this script does is tracked for the panel's
+# "Portly is updating" screen — both when the panel itself triggered this
+# run and when an admin re-runs the script by hand over SSH, since either
+# way the panel should show accurate progress instead of just going quiet.
+mkdir -p "$DATA_DIR"
+: >"$UPDATE_LOG_FILE"
+exec > >(tee -a "$UPDATE_LOG_FILE") 2>&1
+
+TOTAL_STAGES=8
+STAGE=0
+STARTED_AT="$(date -u +%FT%TZ)"
+
+write_progress() {
+	local status=$1 label=$2
+	cat >"$UPDATE_PROGRESS_FILE" <<-JSON
+	{"status":"$status","stage":$STAGE,"total_stages":$TOTAL_STAGES,"label":"$label","started_at":"$STARTED_AT","updated_at":"$(date -u +%FT%TZ)"}
+	JSON
+}
+
+stage() {
+	STAGE=$((STAGE + 1))
+	log "[$STAGE/$TOTAL_STAGES] $1"
+	write_progress running "$1"
+}
+
+on_error() {
+	write_progress failed "Update failed — check the log below"
+}
+trap on_error ERR
+
 command -v curl >/dev/null 2>&1 || die "curl is required but not installed"
+
+stage "Installing prerequisites"
 
 MISSING_PKGS=""
 command -v git >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS git"
@@ -73,6 +114,8 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versio
 	curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null
 	apt-get install -y -qq nodejs
 fi
+
+stage "Fetching the latest code"
 
 # Reuse an existing checkout if we're already inside one (e.g. the user
 # cloned the repo themselves and ran this script from there); otherwise
@@ -98,19 +141,22 @@ else
 	fi
 fi
 
+stage "Building portly-server and portly-client"
+
 log "ensuring Go toolchain..."
 bash "$SRC_DIR/scripts/install-go.sh"
 export PATH="$PATH:/usr/local/go/bin"
 
-log "building portly-server (with embedded client binaries) and portly-client..."
 make -C "$SRC_DIR" build
 
 install -Dm755 "$SRC_DIR/bin/portly-server" /usr/local/bin/portly-server
 install -Dm755 "$SRC_DIR/bin/portly-client" /usr/local/bin/portly-client
 
+stage "Installing the server and updater services"
+
 id -u portly >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin portly
-mkdir -p /var/lib/portly
-chown portly:portly /var/lib/portly
+mkdir -p "$DATA_DIR"
+chown portly:portly "$DATA_DIR"
 
 log "installing systemd service..."
 cat >/etc/systemd/system/portly-server.service <<EOF
@@ -162,10 +208,12 @@ Description=Portly self-update, triggered by the panel's "Update now" button
 Type=oneshot
 # Removed first so the .path unit re-arms for the next request, and so a
 # failed update can't wedge this into a restart loop.
+# No StandardOutput/StandardError override here — the script itself tees
+# its output into $UPDATE_LOG_FILE (see the top of this script), which
+# works the same way whether this unit runs it or an admin runs it by hand
+# over SSH. Redirecting here too would just double up every line.
 ExecStartPre=/bin/rm -f ${UPDATE_TRIGGER_FILE}
 ExecStart=${SRC_DIR}/scripts/quickstart-vps.sh
-StandardOutput=append:/var/lib/portly/update.log
-StandardError=append:/var/lib/portly/update.log
 EOF
 
 cat >/etc/systemd/system/portly-update.path <<EOF
@@ -195,7 +243,7 @@ systemctl restart portly-update.path
 # disk, so restart explicitly every time instead.
 systemctl restart portly-server
 
-log "building the web UI (this can take a minute)..."
+stage "Building the web UI"
 # No NEXT_PUBLIC_API_BASE needed: portly-server reverse-proxies the UI onto
 # its own origin, so the UI just calls the API relative to wherever it's
 # being served from — nothing to bake in at build time, no rebuild needed
@@ -203,7 +251,7 @@ log "building the web UI (this can take a minute)..."
 ( cd "$SRC_DIR/web" && npm install --no-audit --no-fund --silent && npm run build )
 chown -R portly:portly "$SRC_DIR/web"
 
-log "installing web UI systemd service..."
+stage "Installing the web UI service"
 cat >/etc/systemd/system/portly-web.service <<EOF
 [Unit]
 Description=Portly web UI (internal — reverse-proxied by portly-server)
@@ -229,6 +277,7 @@ systemctl daemon-reload
 systemctl enable portly-web
 systemctl restart portly-web
 
+stage "Configuring the firewall"
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
 	log "opening firewall ports ${CONTROL_PORT}, ${WEB_PORT}, and ${HTTPS_PORT} via ufw..."
 	ufw allow "${CONTROL_PORT}/tcp" >/dev/null
@@ -236,8 +285,14 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
 	ufw allow "${HTTPS_PORT}/tcp" >/dev/null
 fi
 
+stage "Finishing up"
 sleep 2
 PUBLIC_IP="$(curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || echo "<your-vps-ip>")"
+
+# Mark this run as done before the ERR trap could ever fire again — nothing
+# past this point does more than print a summary.
+write_progress done "Update complete"
+trap - ERR
 
 log "done."
 echo ""

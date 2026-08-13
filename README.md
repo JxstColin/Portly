@@ -235,12 +235,23 @@ install into. A separate unit sidesteps both, and keeps every hardening
 option on `portly-server` intact.
 
 Clicking **Update now** therefore runs the exact same process as the
-manual one-liner, in a unit that outlives the restart it triggers — the
-panel polls and reloads automatically once the server comes back up on
-the new build. Update output is appended to `/var/lib/portly/update.log`.
-If the updater unit isn't installed yet (an install predating it, or a
-non-systemd host), the button says so explicitly instead of silently
-doing nothing.
+manual one-liner, in a unit that outlives the restart it triggers. While it
+runs, the panel shows a full-screen **"Portly is updating"** progress
+screen — a live progress bar through the update's stages (fetching code,
+building, installing services, …) plus a tail of the update script's own
+console output, both read straight from `/var/lib/portly/update.log` and
+`update-progress.json`. That screen keeps working across the restart
+`portly-server` performs partway through an update (which normally logs
+every admin out, since sessions are only ever kept in memory) and across a
+plain page refresh, because it comes from an unauthenticated endpoint
+purpose-built to survive both. It disappears — and the panel reloads
+automatically — once the update finishes, or shows the failure and the log
+tail if something went wrong partway through. Re-running
+`quickstart-vps.sh` by hand over SSH drives the exact same screen, so
+manual updates show live progress too, not just panel-triggered ones. If
+the updater unit isn't installed yet (an install predating it, or a
+non-systemd host), the button says so explicitly instead of silently doing
+nothing.
 
 ## Uninstalling
 

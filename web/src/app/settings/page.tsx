@@ -409,8 +409,6 @@ function DomainTab() {
   );
 }
 
-const updatePollInterval = 5_000;
-const updatePollTimeoutMs = 5 * 60_000;
 // How often this tab re-polls the (cheap, cached) update-status endpoint in
 // the background, so "update available" shows up here without needing a
 // manual "Check now" or a page reload. Same cadence as the dashboard
@@ -477,28 +475,12 @@ function UpdatesTab() {
     setError(null);
     setApplying(true);
     try {
-      const before = status;
       await api.applyUpdate();
-
-      // The server restarts itself partway through — poll until it comes
-      // back up reporting a different (i.e. now-current) commit, rather
-      // than waiting for this request to "finish" (it never will from the
-      // server's side, since the process handling it gets killed).
-      const deadline = Date.now() + updatePollTimeoutMs;
-      const poll = async (): Promise<void> => {
-        if (Date.now() > deadline) {
-          setError("Update is taking longer than expected — check journalctl -u portly-server on the VPS.");
-          setApplying(false);
-          return;
-        }
-        const s = await load();
-        if (s && (!before || s.current_commit !== before.current_commit)) {
-          setApplying(false);
-          return;
-        }
-        setTimeout(poll, updatePollInterval);
-      };
-      setTimeout(poll, updatePollInterval);
+      // The global "Portly is updating" overlay (see UpdateOverlay, mounted
+      // in the root layout) takes it from here: it polls update-progress
+      // directly and reloads the page once the update finishes, so there's
+      // nothing left to poll for on this end. applying just covers the
+      // brief gap before that overlay's first poll lands.
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to start update");
       setApplying(false);
@@ -567,9 +549,7 @@ function UpdatesTab() {
 
             {applying && (
               <p className="mt-3 animate-fade-in text-sm text-foreground-secondary">
-                Update running — this can take a few minutes. The panel will go
-                briefly unreachable while the server restarts, then this page
-                refreshes automatically.
+                Starting the update…
               </p>
             )}
 
