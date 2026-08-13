@@ -149,13 +149,13 @@ export function TunnelSettingsModal({
                   checked={proxyProtocol}
                   onChange={(e) => setProxyProtocol(e.target.checked)}
                 />
-                Send real player IP (PROXY protocol)
+                Proxy Protocol
               </label>
               <p className="mt-1 text-xs text-foreground-muted">
                 Without this, the local service logs this machine&apos;s own LAN
-                address for every player, because it&apos;s the machine running
+                address for every user, because it&apos;s the machine running
                 portly-client that actually opens the connection to it. With it
-                on, the real player address is passed along using the{" "}
+                on, the real user&apos;s address is passed along using the{" "}
                 <a
                   href="https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt"
                   target="_blank"
