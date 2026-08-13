@@ -633,6 +633,29 @@ func yamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.EnableKeepAlive = true
 	cfg.KeepAliveInterval = 15 * time.Second
+
+	// yamux's default here is 10s, and it is not just a write deadline: the
+	// keepalive ping has to complete a full round trip within it too, and a
+	// miss on either tears down the WHOLE session — which means every
+	// player on every tunnel of that machine is dropped at once, and the
+	// client then reconnects as if nothing were wrong. On a home uplink
+	// that is far too tight. A backup starting, someone uploading a video,
+	// or simply a burst of players is enough to queue 10s of bufferbloat
+	// ahead of the ping, and everyone gets kicked for a link that was never
+	// actually down. Detecting a genuinely dead peer now takes up to a
+	// minute instead of ten seconds, which costs nothing in practice (the
+	// client reconnects about a second later either way) and is a much
+	// better trade than severing live sessions over transient congestion.
+	cfg.ConnectionWriteTimeout = 60 * time.Second
+
+	// Default is 256 KiB per stream. Raising it gives each player's
+	// connection more room in flight before it has to stall waiting for
+	// window updates, which matters because a stall long enough to trip
+	// the game server's own read timeout gets the player kicked even when
+	// the tunnel itself is perfectly healthy. 1 MiB keeps worst-case
+	// buffering per connection bounded and modest.
+	cfg.MaxStreamWindowSize = 1024 * 1024
+
 	cfg.LogOutput = io.Discard
 	return cfg
 }
