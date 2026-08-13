@@ -20,12 +20,10 @@
 # and restarts them in place. portly-client machines out in the field
 # update themselves automatically and don't need this re-run for that.
 #
-# The panel's own "Update now" button (which triggers this same update
-# process directly from the web UI) is granted every time this script
-# runs, via a narrowly-scoped passwordless sudo rule (see the SUDOERS_FILE
-# section below for exactly what it grants) — there's no way to opt out of
-# this short of not running the script, since the button and this script
-# are how the panel updates itself at all.
+# Running this script is also what wires up the panel's own "Update now"
+# button: it installs a root-owned systemd .path unit that watches for an
+# update request from the panel and runs this same script in response (see
+# the portly-update section below for exactly how, and why it isn't sudo).
 set -euo pipefail
 
 REPO_URL="https://github.com/JxstColin/Portly.git"
@@ -35,7 +33,11 @@ WEB_PORT=80
 HTTPS_PORT=443
 LOCAL_WEB_PORT=3000
 NODE_MAJOR=20
-SUDOERS_FILE=/etc/sudoers.d/portly-update
+# Written by portly-server (the one path it can write to) to request an
+# update; watched by portly-update.path. Must match updateTriggerFileName
+# in cmd/portly-server/main.go.
+UPDATE_TRIGGER_FILE=/var/lib/portly/update-requested
+SUDOERS_FILE=/etc/sudoers.d/portly-update # legacy, removed below
 
 log() { echo "[quickstart] $*"; }
 die() { echo "[quickstart] error: $*" >&2; exit 1; }
@@ -135,39 +137,62 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-if [ "$SRC_DIR" != "$DEFAULT_SRC_DIR" ]; then
-	UPDATE_BUTTON_STATUS="NOT enabled — this checkout is at $SRC_DIR, not the standard $DEFAULT_SRC_DIR that portly-server checks for a sudo grant at. Re-run via the curl one-liner from the README (not from a custom checkout) to get it."
-	log "WARNING: $UPDATE_BUTTON_STATUS"
-else
-	log "granting the panel permission to trigger updates directly..."
-	# Exactly one command, no arguments, run as root, no password — the
-	# 'portly' user (which the server runs as, unprivileged otherwise) can
-	# only ever run this exact script this exact way, nothing else. The
-	# script itself lives under $SRC_DIR, which 'portly' cannot write to
-	# (only $SRC_DIR/web is chowned to it, for the npm build).
-	SUDOERS_TMP="$(mktemp)"
-	echo "portly ALL=(root) NOPASSWD: ${SRC_DIR}/scripts/quickstart-vps.sh" >"$SUDOERS_TMP"
-	chmod 0440 "$SUDOERS_TMP"
-	VISUDO_ERR="$(visudo -c -f "$SUDOERS_TMP" 2>&1 >/dev/null || true)"
-	if [ -z "$VISUDO_ERR" ]; then
-		mv "$SUDOERS_TMP" "$SUDOERS_FILE"
-		UPDATE_BUTTON_STATUS="enabled"
-		log "one-click update enabled."
-	else
-		rm -f "$SUDOERS_TMP"
-		UPDATE_BUTTON_STATUS="NOT enabled — generated sudoers rule failed validation: $VISUDO_ERR"
-		log "WARNING: $UPDATE_BUTTON_STATUS"
-	fi
-fi
+# The panel's "Update now" button works by dropping a marker file into
+# /var/lib/portly (the one directory portly-server can write to), which
+# this .path unit watches and turns into a run of this very script as
+# root.
+#
+# It deliberately does NOT go through sudo. portly-server's unit above
+# sets NoNewPrivileges=true, which makes the kernel refuse every setuid
+# binary — sudo included — so a sudoers grant could never have worked
+# from inside that service no matter how it was written. That same unit
+# also sets ProtectSystem=strict, and child processes inherit the mount
+# namespace, so even a working sudo would have been handed a read-only
+# /usr and /opt to install into. This unit runs as root in its own clean
+# namespace instead, sharing nothing with portly-server but the marker
+# file — and portly-server never gains a privilege of its own.
+log "installing the panel-triggered updater..."
+rm -f "$SUDOERS_FILE" # no longer used; the sudo approach never worked (see above)
+
+cat >/etc/systemd/system/portly-update.service <<EOF
+[Unit]
+Description=Portly self-update, triggered by the panel's "Update now" button
+
+[Service]
+Type=oneshot
+# Removed first so the .path unit re-arms for the next request, and so a
+# failed update can't wedge this into a restart loop.
+ExecStartPre=/bin/rm -f ${UPDATE_TRIGGER_FILE}
+ExecStart=${SRC_DIR}/scripts/quickstart-vps.sh
+StandardOutput=append:/var/lib/portly/update.log
+StandardError=append:/var/lib/portly/update.log
+EOF
+
+cat >/etc/systemd/system/portly-update.path <<EOF
+[Unit]
+Description=Watch for Portly update requests from the panel
+
+[Path]
+PathExists=${UPDATE_TRIGGER_FILE}
+Unit=portly-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+UPDATE_BUTTON_STATUS="enabled"
 
 systemctl daemon-reload
 systemctl enable portly-server
+systemctl enable portly-update.path
+# Starting the .path unit is what actually arms the watch. Restarting it
+# is safe mid-update: this script is running *from* portly-update.service,
+# and a .path unit is a separate unit from the service it triggers.
+systemctl restart portly-update.path
 # 'enable --now' only starts a service that isn't already running — on a
 # re-run (update) it would silently leave the old binary's process alive
 # in memory even though we just replaced /usr/local/bin/portly-server on
-# disk, so restart explicitly every time instead. This also picks up the
-# sudo grant made just above, since portly-server only checks for it at
-# startup.
+# disk, so restart explicitly every time instead.
 systemctl restart portly-server
 
 log "building the web UI (this can take a minute)..."

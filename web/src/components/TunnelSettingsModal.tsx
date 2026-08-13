@@ -152,9 +152,10 @@ export function TunnelSettingsModal({
                 Send real player IP (PROXY protocol)
               </label>
               <p className="mt-1 text-xs text-foreground-muted">
-                Without this, the local service sees this machine&apos;s own
-                address instead of the actual player&apos;s IP. Only enable it if
-                the local service understands the{" "}
+                Without this, the local service logs this machine&apos;s own LAN
+                address for every player, because it&apos;s the machine running
+                portly-client that actually opens the connection to it. With it
+                on, the real player address is passed along using the{" "}
                 <a
                   href="https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt"
                   target="_blank"
@@ -162,15 +163,29 @@ export function TunnelSettingsModal({
                   className="text-accent hover:underline"
                 >
                   PROXY protocol
-                </a>{" "}
-                — for Minecraft, that&apos;s Paper&apos;s{" "}
-                <code className="font-mono">proxy-protocol: true</code> setting
-                (not vanilla). Enabling it for anything else breaks the
-                connection outright, since the local service would see the
-                PROXY header as garbage protocol data. Requires
-                portly-client to have picked up this feature (auto-updates
-                within ~15 minutes) before it takes effect.
+                </a>
+                .
               </p>
+              {proxyProtocol && (
+                <div className="mt-2 animate-fade-in rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
+                  <p className="text-foreground-secondary">
+                    <strong>The local service has to expect this</strong>, or every
+                    connection breaks — it would read the PROXY line as
+                    corrupt protocol data. For a Minecraft server on Paper, set
+                    this in <code className="font-mono">config/paper-global.yml</code>{" "}
+                    and restart it:
+                  </p>
+                  <code className="mt-2 block whitespace-pre rounded bg-surface px-2 py-1.5 font-mono">
+                    {"proxies:\n  proxy-protocol: true"}
+                  </code>
+                  <p className="mt-2 text-foreground-secondary">
+                    Vanilla Minecraft does not support this. Nor does the change
+                    apply until portly-client on that machine has picked up this
+                    feature, which happens automatically within ~15 minutes of
+                    the VPS being updated.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

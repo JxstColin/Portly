@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -33,11 +32,24 @@ import (
 // which disables the update checker entirely (see updatecheck.Check).
 var buildCommit = "dev"
 
-// updateScriptPath is the script the one-click update sudo grant (written
-// by quickstart-vps.sh on every run) permits the 'portly' user to run as
-// root, with no arguments. Must match exactly what that script writes to
-// /etc/sudoers.d/portly-update.
-const updateScriptPath = "/opt/portly-src/scripts/quickstart-vps.sh"
+// Panel-triggered updates work by dropping a marker file in the data dir,
+// which a root-owned systemd .path unit watches and reacts to by running
+// the real updater (portly-update.service). portly-server never escalates
+// privileges itself.
+//
+// This deliberately does NOT use sudo. portly-server's own unit sets
+// NoNewPrivileges=true, which makes the kernel refuse every setuid
+// binary — sudo included — so no sudoers grant could ever have worked
+// from inside this process. The same unit also sets ProtectSystem=strict,
+// and a child process inherits that mount namespace, so even a working
+// sudo would have handed the update script a read-only /usr and /opt to
+// install into. A separate systemd unit sidesteps both: it runs as root
+// in its own clean namespace, with nothing shared but the marker file.
+const (
+	updateTriggerFileName = "update-requested"
+	updatePathUnitPath    = "/etc/systemd/system/portly-update.path"
+	systemdRuntimeDir     = "/run/systemd/system"
+)
 
 // updateCheckInterval is how often the panel re-checks GitHub for a newer
 // commit in the background. Matches the interval portly-client already
@@ -56,43 +68,27 @@ const updateCheckInterval = 15 * time.Minute
 // starts; only already-established ones get this grace period.
 const gracefulShutdownTimeout = 25 * time.Second
 
-// sudoUpdateAllowed probes (without running anything) whether the current
-// user is allowed to run updateScriptPath as root without a password —
-// i.e. whether quickstart-vps.sh has successfully written the sudoers
-// grant on this machine. The "Update now" button is always shown in the
-// panel regardless of this; triggerUpdate calls it right before actually
-// attempting the update so a genuinely missing grant produces one clear,
-// specific error instead of the button just silently not being there.
-func sudoUpdateAllowed() bool {
-	return exec.Command("sudo", "-n", "-l", updateScriptPath).Run() == nil
-}
-
-// triggerUpdate starts the real update (git pull, rebuild, service
-// restart) as a fully detached background process — detached because this
-// server process itself gets killed partway through, when the script
-// restarts portly-server, and the update must keep running after that.
+// triggerUpdate requests an update by writing the marker file that
+// portly-update.path watches. It returns as soon as the request is
+// recorded — the update itself runs in a separate root-owned unit that
+// outlives this process (the update restarts portly-server partway
+// through), so there's nothing here to wait on.
+//
+// The two Stat checks exist so a request that nothing would ever act on
+// fails loudly here instead of silently writing a file into the void and
+// reporting success to the panel.
 func triggerUpdate(dataDir string) error {
-	if !sudoUpdateAllowed() {
-		return fmt.Errorf("passwordless sudo for %s isn't granted to this user — SSH in and re-run the quickstart-vps.sh installer/updater once (see README) to set it up, then try again", updateScriptPath)
+	if _, err := os.Stat(systemdRuntimeDir); err != nil {
+		return fmt.Errorf("this server isn't running under systemd, so the panel can't trigger updates — SSH in and run scripts/quickstart-vps.sh by hand instead")
+	}
+	if _, err := os.Stat(updatePathUnitPath); err != nil {
+		return fmt.Errorf("the updater unit isn't installed yet (%s is missing) — SSH in and re-run the quickstart-vps.sh installer once; it installs the updater, and this button works from then on", updatePathUnitPath)
 	}
 
-	logPath := filepath.Join(dataDir, "update.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("open update log: %w", err)
+	trigger := filepath.Join(dataDir, updateTriggerFileName)
+	if err := os.WriteFile(trigger, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("could not request update (writing %s): %w", trigger, err)
 	}
-
-	cmd := exec.Command("sudo", "-n", updateScriptPath)
-	cmd.Stdout, cmd.Stderr = logFile, logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		return fmt.Errorf("start update: %w", err)
-	}
-	go func() {
-		cmd.Wait()
-		logFile.Close()
-	}()
 	return nil
 }
 

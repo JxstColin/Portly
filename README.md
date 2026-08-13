@@ -178,6 +178,18 @@ isn't a way around that for an update that genuinely needs the process to
 restart — but the common case (an update landing while people are
 mid-session) no longer kicks them.
 
+Disconnects *between* updates are a separate thing, and the usual cause is
+the tunnel's multiplexer giving up on a link that was only briefly
+congested rather than actually down. Because every tunnel for a machine
+shares one connection, that tears down all of them at once and everyone
+gets dropped together — the classic symptom being a handful of players
+timing out simultaneously for no visible reason. Portly gives that a
+60-second tolerance rather than the library default of 10, which a home
+uplink can blow through just by having a backup or an upload running. A
+genuinely dead link now takes up to a minute to notice instead of ten
+seconds, which costs nothing in practice since the client reconnects about
+a second later either way.
+
 **Machines (`portly-client`):** nothing to do — every enrolled machine
 checks the VPS for a newer client binary roughly every 15 minutes (with a
 random startup delay so a whole fleet doesn't hit the server at once), and
@@ -203,30 +215,32 @@ of the box, no setup needed.
 An **Update now** button that actually runs the update from the panel
 (instead of you SSHing in and running the one-liner yourself) is always
 shown when an update is available — there's no setting for it, and
-nothing to enable. `portly-server` deliberately runs as an unprivileged
-`portly` user, and triggering `git pull` + rebuild + a service restart
-needs root, so `quickstart-vps.sh` grants exactly that, via a
-narrowly-scoped passwordless `sudo` rule, every single time it sets up or
-updates a VPS — this is how the button (and the panel's own ability to
-update itself at all) works, not an optional extra.
+nothing to enable. Running `quickstart-vps.sh` is what wires it up, every
+single time it sets up or updates a VPS.
 
-This writes `/etc/sudoers.d/portly-update` with a single rule — `portly`
-may run `/opt/portly-src/scripts/quickstart-vps.sh` (that exact script,
-no arguments, nothing else) as root without a password. `portly` can't
-tamper with what that rule actually executes: nothing under
-`/opt/portly-src` except its `web/` subdirectory is writable by `portly`.
-The rule is validated with `visudo -c` before being installed; the script
-prints whether the grant actually succeeded in its final summary. It only
-takes effect for a checkout at the standard `/opt/portly-src` path (the
-one every documented install method produces) — from a custom checkout,
-clicking **Update now** returns a clear error explaining that instead of
-silently failing.
+`portly-server` runs as an unprivileged `portly` user and never escalates
+its own privileges. Instead, clicking the button makes it write a marker
+file into `/var/lib/portly` (the one directory it can write to), and a
+root-owned systemd path unit — `portly-update.path` — watches for that
+file and responds by running `quickstart-vps.sh` as root via
+`portly-update.service`. The two sides share nothing but that file.
 
-Clicking **Update now** runs the exact same process as the manual
-one-liner, as a background process detached from the request that
-triggered it (since `portly-server` restarts itself partway through and
-can't finish handling that request itself) — the panel polls and reloads
-automatically once the server comes back up on the new build.
+This deliberately isn't `sudo`. `portly-server`'s unit sets
+`NoNewPrivileges=true`, which makes the kernel refuse every setuid binary
+— `sudo` included — so no sudoers grant could ever have worked from
+inside that service. The same unit also sets `ProtectSystem=strict`, and
+child processes inherit that mount namespace, so even a working `sudo`
+would have handed the update script a read-only `/usr` and `/opt` to
+install into. A separate unit sidesteps both, and keeps every hardening
+option on `portly-server` intact.
+
+Clicking **Update now** therefore runs the exact same process as the
+manual one-liner, in a unit that outlives the restart it triggers — the
+panel polls and reloads automatically once the server comes back up on
+the new build. Update output is appended to `/var/lib/portly/update.log`.
+If the updater unit isn't installed yet (an install predating it, or a
+non-systemd host), the button says so explicitly instead of silently
+doing nothing.
 
 ## Uninstalling
 
@@ -390,12 +404,15 @@ all of this in one step.
 - The panel's update checker (Settings → Updates, and the Machines page
   banner) only ever makes read-only `GET` requests to GitHub's public API —
   no credentials sent or required. The **Update now** button that actually
-  triggers an update is always shown (see "Updating" above) — it grants the
-  unprivileged `portly` user passwordless root access to exactly one
-  script, at its exact installed path, with no arguments; it cannot be used
-  to run anything else. Requests to trigger it that don't come with a
-  valid, logged-in admin session (same auth as every other panel action)
-  are rejected before the sudo rule is ever touched.
+  triggers an update is always shown (see "Updating" above) — it grants
+  `portly-server` no privileges at all: it only writes a marker file into
+  its own data directory, and a separate root-owned systemd unit decides,
+  on its own terms, to run one fixed script in response. `portly-server`
+  cannot influence *what* that unit runs, and nothing under
+  `/opt/portly-src` is writable by the `portly` user (only its `web/`
+  subdirectory, for the npm build). Requests to trigger an update that
+  don't come with a valid, logged-in admin session (same auth as every
+  other panel action) are rejected before the marker is ever written.
 - Client tokens are 256-bit random values; only their SHA-256 hash is stored
   server-side. The "Add machine" flow never displays the token itself —
   only a short-lived, single-use enrollment code that `portly-client enroll`
@@ -458,7 +475,8 @@ gated first-run bootstrap (no seeded default password), zero-config setup
 from the Settings → Domain page), clean uninstall paths (a VPS uninstall
 script, `portly-client uninstall`, and a panel factory reset), and a panel
 update checker (with a Machines-page banner) plus a one-click **Update
-now** button, backed by a narrowly-scoped sudo grant set up automatically.
+now** button, backed by a root-owned systemd path unit set up
+automatically (no privilege escalation in `portly-server` itself).
 
 Ideas for later: traffic quotas/limits with automatic pause, alert delivery
 beyond the in-UI dashboard (e.g. webhooks), Layer-7 HTTP/HTTPS tunnels
