@@ -62,6 +62,15 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 
+# portly-update.service runs this as root with no login shell, which means
+# no HOME — systemd doesn't set it for a plain root service. Go derives its
+# default module/build cache locations from $HOME, so an unset HOME makes
+# `go build` fail outright with "module cache not found: neither GOMODCACHE
+# nor GOPATH is set". This exact script works fine run by hand over SSH,
+# where the shell already has HOME=/root — only the panel-triggered path
+# was missing it. Root is guaranteed above, so default it explicitly.
+export HOME="${HOME:-/root}"
+
 # From here on, everything this script does is tracked for the panel's
 # "Portly is updating" screen — both when the panel itself triggered this
 # run and when an admin re-runs the script by hand over SSH, since either
@@ -206,6 +215,10 @@ Description=Portly self-update, triggered by the panel's "Update now" button
 
 [Service]
 Type=oneshot
+# Belt-and-suspenders alongside the HOME fallback at the top of this
+# script: systemd doesn't set HOME for a plain root service, and Go's
+# default module/build cache locations derive from it.
+Environment=HOME=/root
 # Removed first so the .path unit re-arms for the next request, and so a
 # failed update can't wedge this into a restart loop.
 # No StandardOutput/StandardError override here — the script itself tees
