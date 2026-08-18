@@ -107,17 +107,22 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "local_port must be 1-65535")
 		return
 	}
-	if req.PublicPort < 1 || req.PublicPort > 65535 {
-		writeError(w, http.StatusBadRequest, "public_port must be 1-65535")
+	// 0 means "no dedicated public port" — the tunnel is only reachable via
+	// the shared Minecraft hostname router (set public_hostname to route to
+	// it), not its own listener.
+	if req.PublicPort != 0 && (req.PublicPort < 1 || req.PublicPort > 65535) {
+		writeError(w, http.StatusBadRequest, "public_port must be 1-65535, or 0 for hostname-only routing")
 		return
 	}
 	if req.Name == "" {
 		req.Name = req.LocalHost
 	}
 
-	if err := s.Tunnels.ProbePublicPort(req.Protocol, req.PublicPort); err != nil {
-		writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", req.PublicPort, err))
-		return
+	if req.PublicPort != 0 {
+		if err := s.Tunnels.ProbePublicPort(req.Protocol, req.PublicPort); err != nil {
+			writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", req.PublicPort, err))
+			return
+		}
 	}
 
 	t, err := s.DB.CreateTunnel(req.ClientID, req.Name, req.LocalHost, req.LocalPort, req.PublicPort, req.Protocol)
@@ -150,9 +155,11 @@ func (s *Server) handleUpdateTunnel(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "tunnel not found")
 			return
 		}
-		if err := s.Tunnels.ProbePublicPort(t.Protocol, t.PublicPort); err != nil {
-			writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", t.PublicPort, err))
-			return
+		if t.PublicPort != 0 {
+			if err := s.Tunnels.ProbePublicPort(t.Protocol, t.PublicPort); err != nil {
+				writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", t.PublicPort, err))
+				return
+			}
 		}
 	}
 	if err := s.DB.SetTunnelEnabled(id, *req.Enabled); err != nil {
@@ -188,6 +195,16 @@ func (s *Server) handleUpdateTunnelSettings(w http.ResponseWriter, r *http.Reque
 	if len(req.PublicHostname) > 253 {
 		writeError(w, http.StatusBadRequest, "public_hostname is too long")
 		return
+	}
+
+	// public_hostname now drives real routing (see RunMinecraftRouter), so
+	// a collision isn't just cosmetic anymore — reject it clearly instead
+	// of silently letting two tunnels shadow each other.
+	if req.PublicHostname != "" {
+		if taken, err := s.DB.HostnameTaken(req.PublicHostname, id); err == nil && taken {
+			writeError(w, http.StatusConflict, fmt.Sprintf("hostname %q is already in use by another tunnel", req.PublicHostname))
+			return
+		}
 	}
 
 	if err := s.DB.UpdateTunnelSettings(id, req.TrafficLimitBytes, req.PublicHostname, req.ProxyProtocol); err != nil {

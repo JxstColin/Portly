@@ -68,7 +68,119 @@ func migrateSchema(sqlDB *sql.DB) error {
 			return fmt.Errorf("add column %s.%s: %w", m.table, m.column, err)
 		}
 	}
+
+	if err := migrateTunnelsPublicPortNullable(sqlDB); err != nil {
+		return fmt.Errorf("migrate tunnels.public_port nullable: %w", err)
+	}
+
 	return nil
+}
+
+// migrateTunnelsPublicPortNullable relaxes tunnels.public_port from
+// NOT NULL to nullable, so a tunnel can opt out of a dedicated public port
+// and be reached only via the shared Minecraft hostname router instead.
+// SQLite can't ALTER a column's NOT NULL constraint directly, so this
+// rebuilds the table using SQLite's documented safe procedure:
+// https://www.sqlite.org/lang_altertable.html#otheralter
+// It's idempotent (skipped once the column is already nullable) and only
+// ever runs once per database, on upgrade from an older version.
+func migrateTunnelsPublicPortNullable(sqlDB *sql.DB) error {
+	notNull, err := columnNotNull(sqlDB, "tunnels", "public_port")
+	if err != nil {
+		return fmt.Errorf("check public_port constraint: %w", err)
+	}
+	if !notNull {
+		return nil // already migrated, or a fresh DB whose schema.sql already has it nullable
+	}
+
+	// foreign_keys is a no-op if toggled inside a transaction, so it must be
+	// set here, before Begin() opens one.
+	if _, err := sqlDB.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer sqlDB.Exec(`PRAGMA foreign_keys=ON`)
+
+	tx, err := sqlDB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE tunnels_new (
+			id                  TEXT PRIMARY KEY,
+			client_id           TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+			name                TEXT NOT NULL,
+			local_host          TEXT NOT NULL,
+			local_port          INTEGER NOT NULL,
+			public_port         INTEGER UNIQUE,
+			protocol            TEXT NOT NULL DEFAULT 'tcp',
+			enabled             INTEGER NOT NULL DEFAULT 1,
+			traffic_limit_bytes INTEGER,
+			bytes_in_total      INTEGER NOT NULL DEFAULT 0,
+			bytes_out_total     INTEGER NOT NULL DEFAULT 0,
+			created_at          INTEGER NOT NULL,
+			public_hostname     TEXT NOT NULL DEFAULT '',
+			proxy_protocol      INTEGER NOT NULL DEFAULT 0
+		)
+	`); err != nil {
+		return fmt.Errorf("create tunnels_new: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO tunnels_new (id, client_id, name, local_host, local_port, public_port, protocol,
+			enabled, traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at, public_hostname, proxy_protocol)
+		SELECT id, client_id, name, local_host, local_port, public_port, protocol,
+			enabled, traffic_limit_bytes, bytes_in_total, bytes_out_total, created_at, public_hostname, proxy_protocol
+		FROM tunnels
+	`); err != nil {
+		return fmt.Errorf("copy tunnels rows: %w", err)
+	}
+
+	if _, err := tx.Exec(`DROP TABLE tunnels`); err != nil {
+		return fmt.Errorf("drop old tunnels: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE tunnels_new RENAME TO tunnels`); err != nil {
+		return fmt.Errorf("rename tunnels_new: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_tunnels_client_id ON tunnels(client_id)`); err != nil {
+		return fmt.Errorf("recreate index: %w", err)
+	}
+
+	rows, err := tx.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	violated := rows.Next()
+	rows.Close()
+	if violated {
+		return fmt.Errorf("foreign key violation detected after tunnels table rebuild, aborting")
+	}
+
+	return tx.Commit()
+}
+
+// columnNotNull reports whether table.column currently has a NOT NULL
+// constraint, via SQLite's PRAGMA table_info introspection.
+func columnNotNull(sqlDB *sql.DB, table, column string) (bool, error) {
+	rows, err := sqlDB.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return notnull == 1, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func hasColumn(sqlDB *sql.DB, table, column string) (bool, error) {
@@ -437,11 +549,14 @@ func (d *DB) UpdateClientLastSeen(id string) error {
 // --- Tunnels ---
 
 type Tunnel struct {
-	ID                string
-	ClientID          string
-	Name              string
-	LocalHost         string
-	LocalPort         int
+	ID        string
+	ClientID  string
+	Name      string
+	LocalHost string
+	LocalPort int
+	// PublicPort is 0 when the tunnel has no dedicated public port and is
+	// only reachable through the shared Minecraft hostname router at
+	// PublicHostname (stored as SQL NULL, not a real port).
 	PublicPort        int
 	Protocol          string
 	Enabled           bool
@@ -453,6 +568,11 @@ type Tunnel struct {
 	CreatedAt         time.Time
 }
 
+// CreateTunnel creates a tunnel. publicPort of 0 means the tunnel has no
+// dedicated public port and is only reachable via the shared Minecraft
+// hostname router (see GetTunnelByHostname) — stored as SQL NULL so
+// multiple such tunnels can coexist under the public_port UNIQUE
+// constraint.
 func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPort int, proto string) (Tunnel, error) {
 	if proto == "" {
 		proto = "tcp"
@@ -468,10 +588,14 @@ func (d *DB) CreateTunnel(clientID, name, localHost string, localPort, publicPor
 		Enabled:    true,
 		CreatedAt:  time.Now(),
 	}
+	var publicPortArg any
+	if publicPort > 0 {
+		publicPortArg = publicPort
+	}
 	_, err := d.sql.Exec(
 		`INSERT INTO tunnels (id, client_id, name, local_host, local_port, public_port, protocol, enabled, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-		t.ID, t.ClientID, t.Name, t.LocalHost, t.LocalPort, t.PublicPort, t.Protocol, t.CreatedAt.Unix(),
+		t.ID, t.ClientID, t.Name, t.LocalHost, t.LocalPort, publicPortArg, t.Protocol, t.CreatedAt.Unix(),
 	)
 	if err != nil {
 		return Tunnel{}, fmt.Errorf("insert tunnel: %w", err)
@@ -505,6 +629,34 @@ func (d *DB) GetTunnelByID(id string) (Tunnel, error) {
 	return tunnels[0], nil
 }
 
+// GetTunnelByHostname resolves an enabled tunnel by its public_hostname,
+// for the Minecraft router to look up where to forward a connection based
+// on the hostname the client handshaked with — independent of whether that
+// tunnel also has its own dedicated public_port.
+func (d *DB) GetTunnelByHostname(hostname string) (Tunnel, error) {
+	tunnels, err := d.queryTunnels(`SELECT `+tunnelColumns+` FROM tunnels WHERE public_hostname = ? AND enabled = 1`, hostname)
+	if err != nil {
+		return Tunnel{}, err
+	}
+	if len(tunnels) == 0 {
+		return Tunnel{}, sql.ErrNoRows
+	}
+	return tunnels[0], nil
+}
+
+// HostnameTaken reports whether hostname is already set on some other
+// tunnel (any tunnel, not just enabled ones — a disabled tunnel holding a
+// hostname would otherwise let a duplicate through only to collide the
+// moment it's re-enabled).
+func (d *DB) HostnameTaken(hostname, excludeTunnelID string) (bool, error) {
+	var count int
+	err := d.sql.QueryRow(
+		`SELECT COUNT(*) FROM tunnels WHERE public_hostname = ? AND id != ?`,
+		hostname, excludeTunnelID,
+	).Scan(&count)
+	return count > 0, err
+}
+
 func (d *DB) queryTunnels(query string, args ...any) ([]Tunnel, error) {
 	rows, err := d.sql.Query(query, args...)
 	if err != nil {
@@ -516,11 +668,14 @@ func (d *DB) queryTunnels(query string, args ...any) ([]Tunnel, error) {
 	for rows.Next() {
 		var t Tunnel
 		var createdAt int64
-		var limit sql.NullInt64
+		var limit, publicPort sql.NullInt64
 		var enabled, proxyProtocol int
-		if err := rows.Scan(&t.ID, &t.ClientID, &t.Name, &t.LocalHost, &t.LocalPort, &t.PublicPort,
+		if err := rows.Scan(&t.ID, &t.ClientID, &t.Name, &t.LocalHost, &t.LocalPort, &publicPort,
 			&t.Protocol, &enabled, &limit, &t.PublicHostname, &proxyProtocol, &t.BytesInTotal, &t.BytesOutTotal, &createdAt); err != nil {
 			return nil, err
+		}
+		if publicPort.Valid {
+			t.PublicPort = int(publicPort.Int64)
 		}
 		t.Enabled = enabled == 1
 		t.ProxyProtocol = proxyProtocol == 1

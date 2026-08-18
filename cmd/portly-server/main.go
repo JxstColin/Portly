@@ -98,6 +98,7 @@ var (
 	apiAddr        string
 	webAddr        string
 	httpsAddr      string
+	mcRouterAddr   string
 	webUpstream    string
 	advertiseHost  []string
 	allowedOrigins []string
@@ -113,6 +114,7 @@ func main() {
 	root.PersistentFlags().StringVar(&apiAddr, "api-addr", ":8080", "address a direct (CORS-enabled) API listener, mainly for local development")
 	root.PersistentFlags().StringVar(&webAddr, "web-addr", ":80", "public address serving the API, installer, and (reverse-proxied) web UI on one origin; also handles Let's Encrypt HTTP-01 challenges")
 	root.PersistentFlags().StringVar(&httpsAddr, "https-addr", ":443", "public HTTPS address, active once a domain is configured in the web UI")
+	root.PersistentFlags().StringVar(&mcRouterAddr, "mc-router-addr", ":25565", "address the shared Minecraft hostname router listens on — lets any number of tunnels share one port via public_hostname instead of each needing its own dedicated public_port; set empty to disable")
 	root.PersistentFlags().StringVar(&webUpstream, "web-upstream", "http://127.0.0.1:3000", "where to reverse-proxy non-API requests (the Next.js UI process)")
 	root.PersistentFlags().StringSliceVar(&advertiseHost, "advertise-host", nil, "hostnames/IPs to embed in the server TLS certificate and use in install links (default: auto-detect this machine's public IP)")
 	root.PersistentFlags().StringSliceVar(&allowedOrigins, "allowed-origin", []string{"http://localhost:3000"}, "origins allowed to call --api-addr with credentials (dev only — --web-addr is same-origin and needs none)")
@@ -317,6 +319,14 @@ func runCmd() *cobra.Command {
 					logger.Error("public HTTPS listener stopped", "err", err)
 				}
 			}()
+
+			if mcRouterAddr != "" {
+				go func() {
+					if err := srv.RunMinecraftRouter(mcRouterAddr); err != nil {
+						logger.Error("minecraft hostname router stopped", "err", err)
+					}
+				}()
+			}
 
 			sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 			defer stopSignals()

@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tunnels (
     name                TEXT NOT NULL,
     local_host          TEXT NOT NULL,
     local_port          INTEGER NOT NULL,
-    public_port         INTEGER NOT NULL UNIQUE,
+    public_port         INTEGER UNIQUE, -- NULL = hostname-routed via the shared Minecraft router, no dedicated port
     protocol            TEXT NOT NULL DEFAULT 'tcp',
     enabled             INTEGER NOT NULL DEFAULT 1,
     traffic_limit_bytes INTEGER,

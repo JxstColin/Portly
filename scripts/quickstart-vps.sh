@@ -32,6 +32,7 @@ DATA_DIR=/var/lib/portly
 CONTROL_PORT=7000
 WEB_PORT=80
 HTTPS_PORT=443
+MC_ROUTER_PORT=25565
 LOCAL_WEB_PORT=3000
 NODE_MAJOR=20
 # Written by portly-server (the one path it can write to) to request an
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
 	--control-port) CONTROL_PORT="$2"; shift 2 ;;
 	--web-port) WEB_PORT="$2"; shift 2 ;;
 	--https-port) HTTPS_PORT="$2"; shift 2 ;;
+	--mc-router-port) MC_ROUTER_PORT="$2"; shift 2 ;;
 	*) die "unknown argument: $1 (host/domain are no longer passed here — set a domain in the web UI once it's running)" ;;
 	esac
 done
@@ -178,7 +180,7 @@ Wants=network-online.target
 Type=simple
 User=portly
 Group=portly
-ExecStart=/usr/local/bin/portly-server --data-dir /var/lib/portly --control-addr :${CONTROL_PORT} --web-addr :${WEB_PORT} --https-addr :${HTTPS_PORT} --web-upstream http://127.0.0.1:${LOCAL_WEB_PORT} run
+ExecStart=/usr/local/bin/portly-server --data-dir /var/lib/portly --control-addr :${CONTROL_PORT} --web-addr :${WEB_PORT} --https-addr :${HTTPS_PORT} --mc-router-addr :${MC_ROUTER_PORT} --web-upstream http://127.0.0.1:${LOCAL_WEB_PORT} run
 Restart=on-failure
 RestartSec=2
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -292,10 +294,11 @@ systemctl restart portly-web
 
 stage "Configuring the firewall"
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
-	log "opening firewall ports ${CONTROL_PORT}, ${WEB_PORT}, and ${HTTPS_PORT} via ufw..."
+	log "opening firewall ports ${CONTROL_PORT}, ${WEB_PORT}, ${HTTPS_PORT}, and ${MC_ROUTER_PORT} via ufw..."
 	ufw allow "${CONTROL_PORT}/tcp" >/dev/null
 	ufw allow "${WEB_PORT}/tcp" >/dev/null
 	ufw allow "${HTTPS_PORT}/tcp" >/dev/null
+	ufw allow "${MC_ROUTER_PORT}/tcp" >/dev/null
 fi
 
 stage "Finishing up"
@@ -330,8 +333,12 @@ echo "you a free Let's Encrypt certificate automatically and the panel then"
 echo "becomes reachable at https://your-domain instead."
 echo ""
 echo "Remember: any cloud firewall / security group in front of this VPS needs"
-echo "${CONTROL_PORT}/tcp, ${WEB_PORT}/tcp, and ${HTTPS_PORT}/tcp opened too (ufw alone"
-echo "isn't enough behind e.g. Hetzner/AWS/DigitalOcean firewalls). Each tunnel's"
-echo "public port needs the same treatment once you create it."
+echo "${CONTROL_PORT}/tcp, ${WEB_PORT}/tcp, ${HTTPS_PORT}/tcp, and ${MC_ROUTER_PORT}/tcp"
+echo "opened too (ufw alone isn't enough behind e.g. Hetzner/AWS/DigitalOcean"
+echo "firewalls). ${MC_ROUTER_PORT}/tcp is the shared Minecraft router port — point"
+echo "one wildcard DNS A record (e.g. *.mc.example.com -> ${PUBLIC_IP}) at it once,"
+echo "and every hostname-routed tunnel under it works with no further per-server"
+echo "setup or SRV records. A tunnel using its own dedicated public port still"
+echo "needs that specific port opened here too."
 echo ""
 echo "Logs: journalctl -u portly-server -f   |   journalctl -u portly-web -f"
