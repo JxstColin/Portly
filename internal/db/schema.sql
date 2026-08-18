@@ -56,6 +56,17 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
     revoked_at  INTEGER NOT NULL
 );
 
+-- Long-lived credentials for external services (e.g. a game panel) to call
+-- the management API without an admin session — separate from client
+-- tokens, which authenticate portly-client installs instead.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    token_hash  TEXT NOT NULL UNIQUE,
+    created_at  INTEGER NOT NULL,
+    last_used   INTEGER
+);
+
 -- Short-lived, single-use codes shown as part of the 'Add machine' install
 -- command. portly-client's 'enroll' subcommand exchanges one of these for
 -- the client's real long-lived token, so the token itself never has to be

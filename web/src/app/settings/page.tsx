@@ -4,9 +4,9 @@ import { FormEvent, Suspense, useCallback, useEffect, useRef, useState } from "r
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth-context";
-import { api, ApiError, SetupStatus, UpdateStatus } from "@/lib/api";
+import { api, ApiError, ApiKey, SetupStatus, UpdateStatus } from "@/lib/api";
 
-type Tab = "account" | "domain" | "updates";
+type Tab = "account" | "domain" | "api-keys" | "updates";
 
 function TabLink({
   tab,
@@ -409,6 +409,137 @@ function DomainTab() {
   );
 }
 
+function ApiKeysTab() {
+  const [keys, setKeys] = useState<ApiKey[] | null>(null);
+  const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newToken, setNewToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setKeys(await api.listApiKeys());
+    } catch {
+      // transient — leave the previous list up
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onCreate(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setCreating(true);
+    try {
+      const res = await api.createApiKey(name.trim());
+      setNewToken(res.token);
+      setName("");
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to create key");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function onDelete(id: string) {
+    try {
+      await api.deleteApiKey(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to revoke key");
+    }
+  }
+
+  function copyToken() {
+    if (!newToken) return;
+    navigator.clipboard.writeText(newToken).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div className="mx-auto max-w-xl">
+      <p className="text-sm text-foreground-secondary">
+        Lets an external service (e.g. a game panel) manage clients and tunnels through the API
+        without an admin session. Anyone holding a key can create, change, or delete tunnels —
+        treat it like a password.
+      </p>
+
+      {newToken && (
+        <div className="mt-4 animate-slide-down rounded-lg border border-border bg-surface-raised p-4">
+          <p className="text-sm font-medium">Copy this token now — it won&apos;t be shown again.</p>
+          <div className="mt-2 flex items-start gap-2 rounded-lg border border-border bg-surface p-3">
+            <code className="flex-1 break-all font-mono text-xs leading-relaxed">{newToken}</code>
+            <button
+              onClick={copyToken}
+              className="shrink-0 rounded-md border border-border px-2 py-1 text-xs transition-colors hover:bg-surface-raised"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <button
+            onClick={() => setNewToken(null)}
+            className="mt-3 text-xs text-foreground-muted transition-colors hover:text-foreground"
+          >
+            Done
+          </button>
+        </div>
+      )}
+
+      <form onSubmit={onCreate} className="mt-4 flex gap-2">
+        <input
+          className="flex-1 rounded-lg border border-border bg-surface-raised px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-accent"
+          placeholder="xPanel"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+        <button
+          type="submit"
+          disabled={creating || !name.trim()}
+          className="shrink-0 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
+        >
+          {creating ? "Creating…" : "New key"}
+        </button>
+      </form>
+      {error && <p className="mt-2 text-sm text-[color:var(--status-critical)]">{error}</p>}
+
+      <div className="mt-6 divide-y divide-border rounded-xl border border-border bg-surface">
+        {keys === null ? (
+          <p className="p-4 text-sm text-foreground-muted">Loading…</p>
+        ) : keys.length === 0 ? (
+          <p className="p-4 text-sm text-foreground-muted">No API keys yet.</p>
+        ) : (
+          keys.map((k) => (
+            <div key={k.id} className="flex items-center justify-between gap-3 p-4">
+              <div>
+                <p className="text-sm font-medium">{k.name}</p>
+                <p className="mt-0.5 text-xs text-foreground-muted">
+                  Created {new Date(k.created_at * 1000).toLocaleString()}
+                  {k.last_used
+                    ? ` · last used ${new Date(k.last_used * 1000).toLocaleString()}`
+                    : " · never used"}
+                </p>
+              </div>
+              <button
+                onClick={() => onDelete(k.id)}
+                className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground-secondary transition-colors hover:border-[color:var(--status-critical)]/40 hover:text-[color:var(--status-critical)]"
+              >
+                Revoke
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // How often this tab re-polls the (cheap, cached) update-status endpoint in
 // the background, so "update available" shows up here without needing a
 // manual "Check now" or a page reload. Same cadence as the dashboard
@@ -567,7 +698,14 @@ function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const tab: Tab = tabParam === "domain" ? "domain" : tabParam === "updates" ? "updates" : "account";
+  const tab: Tab =
+    tabParam === "domain"
+      ? "domain"
+      : tabParam === "api-keys"
+        ? "api-keys"
+        : tabParam === "updates"
+          ? "updates"
+          : "account";
   const firstLogin = searchParams.get("first-login") === "1";
 
   function setTab(next: Tab) {
@@ -585,6 +723,9 @@ function SettingsContent() {
         <TabLink tab="domain" active={tab === "domain"} onClick={setTab}>
           Domain
         </TabLink>
+        <TabLink tab="api-keys" active={tab === "api-keys"} onClick={setTab}>
+          API Keys
+        </TabLink>
         <TabLink tab="updates" active={tab === "updates"} onClick={setTab}>
           Updates
         </TabLink>
@@ -595,6 +736,8 @@ function SettingsContent() {
           <AccountTab firstLogin={firstLogin} />
         ) : tab === "domain" ? (
           <DomainTab />
+        ) : tab === "api-keys" ? (
+          <ApiKeysTab />
         ) : (
           <UpdatesTab />
         )}

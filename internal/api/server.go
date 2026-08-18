@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,23 +176,33 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("GET /api/bootstrap/status", s.handleBootstrapStatus)
 	mux.HandleFunc("POST /api/bootstrap/claim", s.handleBootstrapClaim)
 
-	mux.HandleFunc("GET /api/server/info", s.requireAuth(s.handleServerInfo))
+	// requireAuthOrAPIKey rather than requireAuth on the routes an external
+	// service like a game panel actually needs (reading server info,
+	// listing clients to pick one, full tunnel CRUD) — everything else
+	// (creating/deleting machines, traffic history, the live WS, settings)
+	// stays session-only, since those are either a physical-install step or
+	// purely a web-UI concern an API key has no business touching.
+	mux.HandleFunc("GET /api/server/info", s.requireAuthOrAPIKey(s.handleServerInfo))
 
-	mux.HandleFunc("GET /api/clients", s.requireAuth(s.handleListClients))
+	mux.HandleFunc("GET /api/clients", s.requireAuthOrAPIKey(s.handleListClients))
 	mux.HandleFunc("POST /api/clients", s.requireAuth(s.handleCreateClient))
 	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuth(s.handleDeleteClient))
 	mux.HandleFunc("PATCH /api/clients/{id}/settings", s.requireAuth(s.handleUpdateClientSettings))
 	mux.HandleFunc("GET /api/clients/{id}/devices", s.requireAuth(s.handleListClientDevices))
 	mux.HandleFunc("POST /api/clients/{id}/reissue-install", s.requireAuth(s.handleReissueInstall))
 
-	mux.HandleFunc("GET /api/tunnels", s.requireAuth(s.handleListTunnels))
-	mux.HandleFunc("POST /api/tunnels", s.requireAuth(s.handleCreateTunnel))
-	mux.HandleFunc("PATCH /api/tunnels/{id}", s.requireAuth(s.handleUpdateTunnel))
-	mux.HandleFunc("PATCH /api/tunnels/{id}/settings", s.requireAuth(s.handleUpdateTunnelSettings))
-	mux.HandleFunc("DELETE /api/tunnels/{id}", s.requireAuth(s.handleDeleteTunnel))
+	mux.HandleFunc("GET /api/tunnels", s.requireAuthOrAPIKey(s.handleListTunnels))
+	mux.HandleFunc("POST /api/tunnels", s.requireAuthOrAPIKey(s.handleCreateTunnel))
+	mux.HandleFunc("PATCH /api/tunnels/{id}", s.requireAuthOrAPIKey(s.handleUpdateTunnel))
+	mux.HandleFunc("PATCH /api/tunnels/{id}/settings", s.requireAuthOrAPIKey(s.handleUpdateTunnelSettings))
+	mux.HandleFunc("DELETE /api/tunnels/{id}", s.requireAuthOrAPIKey(s.handleDeleteTunnel))
 
 	mux.HandleFunc("GET /api/tunnels/{id}/traffic", s.requireAuth(s.handleTunnelTraffic))
 	mux.HandleFunc("GET /api/ws/live", s.requireAuth(s.handleLiveWS))
+
+	mux.HandleFunc("GET /api/api-keys", s.requireAuth(s.handleListAPIKeys))
+	mux.HandleFunc("POST /api/api-keys", s.requireAuth(s.handleCreateAPIKey))
+	mux.HandleFunc("DELETE /api/api-keys/{id}", s.requireAuth(s.handleDeleteAPIKey))
 
 	mux.HandleFunc("GET /install.sh", s.handleInstallScript)
 	mux.HandleFunc("GET /downloads/{osarch}", s.handleDownloadClient)
@@ -298,6 +309,44 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// requireAuthOrAPIKey accepts either an admin session (browser/web UI) or a
+// "ptly_api_..." bearer token (external services, e.g. a game panel
+// managing tunnels for it). Route registration in Router() decides which
+// endpoints allow the API-key path at all — see the comment there.
+func (s *Server) requireAuthOrAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.sessionAdminID(r); ok {
+			next(w, r)
+			return
+		}
+		if key, ok := s.apiKeyFromRequest(r); ok {
+			// Best-effort — a failed timestamp update shouldn't block the
+			// actual request the key was presented for.
+			_ = s.DB.UpdateAPIKeyLastUsed(key.ID)
+			next(w, r)
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+	}
+}
+
+func (s *Server) apiKeyFromRequest(r *http.Request) (db.ApiKey, bool) {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return db.ApiKey{}, false
+	}
+	token := strings.TrimPrefix(auth, prefix)
+	if !strings.HasPrefix(token, "ptly_api_") {
+		return db.ApiKey{}, false
+	}
+	key, err := s.DB.GetAPIKeyByHash(db.HashToken(token))
+	if err != nil {
+		return db.ApiKey{}, false
+	}
+	return key, true
 }
 
 func randomHex(n int) string {

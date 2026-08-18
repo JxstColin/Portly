@@ -698,6 +698,107 @@ func randomCode(n int) (string, error) {
 	return string(b), nil
 }
 
+// --- API keys ---
+
+type ApiKey struct {
+	ID        string
+	Name      string
+	TokenHash string
+	CreatedAt time.Time
+	LastUsed  *time.Time
+}
+
+// GenerateAPIKey mirrors GenerateToken's shape (random 32 bytes, SHA-256
+// hashed at rest) but with a distinct "ptly_api_" prefix, so an API key
+// meant for an external service calling in is visually distinguishable
+// from a client token meant for a portly-client install.
+func GenerateAPIKey() (key, hash string, err error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", err
+	}
+	key = "ptly_api_" + hex.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(key))
+	hash = hex.EncodeToString(sum[:])
+	return key, hash, nil
+}
+
+func (d *DB) CreateAPIKey(name string) (ApiKey, string, error) {
+	key, hash, err := GenerateAPIKey()
+	if err != nil {
+		return ApiKey{}, "", err
+	}
+	k := ApiKey{
+		ID:        uuid.NewString(),
+		Name:      name,
+		TokenHash: hash,
+		CreatedAt: time.Now(),
+	}
+	_, err = d.sql.Exec(
+		`INSERT INTO api_keys (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)`,
+		k.ID, k.Name, k.TokenHash, k.CreatedAt.Unix(),
+	)
+	if err != nil {
+		return ApiKey{}, "", fmt.Errorf("insert api key: %w", err)
+	}
+	return k, key, nil
+}
+
+const apiKeyColumns = `id, name, token_hash, created_at, last_used`
+
+func (d *DB) ListAPIKeys() ([]ApiKey, error) {
+	rows, err := d.sql.Query(`SELECT ` + apiKeyColumns + ` FROM api_keys ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ApiKey
+	for rows.Next() {
+		var k ApiKey
+		var createdAt int64
+		var lastUsed sql.NullInt64
+		if err := rows.Scan(&k.ID, &k.Name, &k.TokenHash, &createdAt, &lastUsed); err != nil {
+			return nil, err
+		}
+		k.CreatedAt = time.Unix(createdAt, 0)
+		if lastUsed.Valid {
+			t := time.Unix(lastUsed.Int64, 0)
+			k.LastUsed = &t
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// GetAPIKeyByHash is on the request hot path for every API-key-authenticated
+// call, same as GetClientByTokenHash is for client connections.
+func (d *DB) GetAPIKeyByHash(hash string) (ApiKey, error) {
+	row := d.sql.QueryRow(`SELECT `+apiKeyColumns+` FROM api_keys WHERE token_hash = ?`, hash)
+	var k ApiKey
+	var createdAt int64
+	var lastUsed sql.NullInt64
+	if err := row.Scan(&k.ID, &k.Name, &k.TokenHash, &createdAt, &lastUsed); err != nil {
+		return ApiKey{}, err
+	}
+	k.CreatedAt = time.Unix(createdAt, 0)
+	if lastUsed.Valid {
+		t := time.Unix(lastUsed.Int64, 0)
+		k.LastUsed = &t
+	}
+	return k, nil
+}
+
+func (d *DB) UpdateAPIKeyLastUsed(id string) error {
+	_, err := d.sql.Exec(`UPDATE api_keys SET last_used = ? WHERE id = ?`, time.Now().Unix(), id)
+	return err
+}
+
+func (d *DB) DeleteAPIKey(id string) error {
+	_, err := d.sql.Exec(`DELETE FROM api_keys WHERE id = ?`, id)
+	return err
+}
+
 // --- Server settings (key-value) ---
 
 func (d *DB) GetSetting(key string) (value string, ok bool, err error) {
