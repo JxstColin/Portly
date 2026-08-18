@@ -99,6 +99,18 @@ export interface CreateClientResult {
   expires_at: number;
 }
 
+export interface ApiKey {
+  id: string;
+  name: string;
+  created_at: number;
+  last_used?: number;
+}
+
+export interface CreateApiKeyResult {
+  api_key: ApiKey;
+  token: string;
+}
+
 export interface BootstrapStatus {
   needs_setup: boolean;
 }
@@ -213,6 +225,14 @@ export const api = {
 
   tunnelTraffic: (id: string, sinceUnix: number) =>
     request<TrafficSample[]>(`/api/tunnels/${id}/traffic?since=${sinceUnix}`),
+
+  listApiKeys: () => request<ApiKey[]>("/api/api-keys"),
+  createApiKey: (name: string) =>
+    request<CreateApiKeyResult>("/api/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  deleteApiKey: (id: string) => request<void>(`/api/api-keys/${id}`, { method: "DELETE" }),
 
   getSetup: () => request<SetupStatus>("/api/setup"),
   setDomain: (domain: string) =>
