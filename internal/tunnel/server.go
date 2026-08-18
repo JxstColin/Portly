@@ -49,6 +49,9 @@ type Server struct {
 	controlLnMu sync.Mutex
 	controlLn   net.Listener // set once Run's Accept loop is up, for Shutdown to close
 
+	mcRouterLnMu sync.Mutex
+	mcRouterLn   net.Listener // set once RunMinecraftRouter's Accept loop is up, for Shutdown to close
+
 	shutdownOnce sync.Once
 	shutdownCh   chan struct{} // closed by Shutdown; reconcileLoop/reconcileListeners stop reacting once closed
 
@@ -150,6 +153,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.controlLn.Close()
 	}
 	s.controlLnMu.Unlock()
+
+	s.mcRouterLnMu.Lock()
+	if s.mcRouterLn != nil {
+		s.mcRouterLn.Close()
+	}
+	s.mcRouterLnMu.Unlock()
 
 	s.listenersMu.Lock()
 	for id, pl := range s.listeners {
@@ -438,6 +447,13 @@ func (s *Server) reconcileListeners() {
 	// Start listeners for new tunnels.
 	for id, t := range wanted {
 		if _, ok := s.listeners[id]; ok {
+			continue
+		}
+		if t.PublicPort == 0 {
+			// Hostname-routed: reachable only via the shared Minecraft
+			// router (RunMinecraftRouter), which resolves it by
+			// PublicHostname on every connection — no dedicated listener
+			// to start here.
 			continue
 		}
 		pl, err := s.startTunnelListener(t)
