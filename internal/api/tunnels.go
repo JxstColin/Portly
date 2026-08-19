@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jxstcolin/portly/internal/db"
@@ -66,13 +68,58 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// portSpec accepts either a bare JSON number (25565) or a "start-end" range
+// string ("25565-25574") for local_port/public_port — a range expands into
+// one tunnel per port pair, so a whole contiguous block (e.g. an FTP
+// passive-mode port range) can be tunneled in a single request instead of
+// one per port.
+type portSpec struct {
+	values []int
+}
+
+func (p *portSpec) UnmarshalJSON(data []byte) error {
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		p.values = []int{n}
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("must be a number or a \"start-end\" range string")
+	}
+	s = strings.TrimSpace(s)
+
+	before, after, isRange := strings.Cut(s, "-")
+	if !isRange {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return fmt.Errorf("invalid port value %q", s)
+		}
+		p.values = []int{n}
+		return nil
+	}
+
+	start, err1 := strconv.Atoi(strings.TrimSpace(before))
+	end, err2 := strconv.Atoi(strings.TrimSpace(after))
+	if err1 != nil || err2 != nil || start > end {
+		return fmt.Errorf("invalid port range %q", s)
+	}
+	values := make([]int, 0, end-start+1)
+	for v := start; v <= end; v++ {
+		values = append(values, v)
+	}
+	p.values = values
+	return nil
+}
+
 type createTunnelRequest struct {
-	ClientID   string `json:"client_id"`
-	Name       string `json:"name"`
-	Protocol   string `json:"protocol"`
-	LocalHost  string `json:"local_host"`
-	LocalPort  int    `json:"local_port"`
-	PublicPort int    `json:"public_port"`
+	ClientID   string   `json:"client_id"`
+	Name       string   `json:"name"`
+	Protocol   string   `json:"protocol"`
+	LocalHost  string   `json:"local_host"`
+	LocalPort  portSpec `json:"local_port"`
+	PublicPort portSpec `json:"public_port"`
 }
 
 func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
@@ -103,34 +150,80 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "protocol must be 'tcp' or 'udp'")
 		return
 	}
-	if req.LocalPort < 1 || req.LocalPort > 65535 {
-		writeError(w, http.StatusBadRequest, "local_port must be 1-65535")
+
+	localPorts := req.LocalPort.values
+	publicPorts := req.PublicPort.values
+	isRange := len(localPorts) > 1 || len(publicPorts) > 1
+	if isRange && len(localPorts) != len(publicPorts) {
+		writeError(w, http.StatusBadRequest, "local_port and public_port ranges must be the same length")
 		return
-	}
-	// 0 means "no dedicated public port" — the tunnel is only reachable via
-	// the shared Minecraft hostname router (set public_hostname to route to
-	// it), not its own listener.
-	if req.PublicPort != 0 && (req.PublicPort < 1 || req.PublicPort > 65535) {
-		writeError(w, http.StatusBadRequest, "public_port must be 1-65535, or 0 for hostname-only routing")
-		return
-	}
-	if req.Name == "" {
-		req.Name = req.LocalHost
 	}
 
-	if req.PublicPort != 0 {
-		if err := s.Tunnels.ProbePublicPort(req.Protocol, req.PublicPort); err != nil {
-			writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", req.PublicPort, err))
+	for _, p := range localPorts {
+		if p < 1 || p > 65535 {
+			writeError(w, http.StatusBadRequest, "local_port must be 1-65535")
+			return
+		}
+	}
+	for _, p := range publicPorts {
+		// 0 means "no dedicated public port" — the tunnel is only reachable
+		// via the shared Minecraft hostname router (set public_hostname to
+		// route to it), not its own listener. Doesn't make sense inside a
+		// range, since every port in it would collide on the same 0.
+		if p != 0 && (p < 1 || p > 65535) {
+			writeError(w, http.StatusBadRequest, "public_port must be 1-65535, or 0 for hostname-only routing")
+			return
+		}
+		if isRange && p == 0 {
+			writeError(w, http.StatusBadRequest, "public_port 0 (hostname-only routing) isn't valid inside a range")
 			return
 		}
 	}
 
-	t, err := s.DB.CreateTunnel(req.ClientID, req.Name, req.LocalHost, req.LocalPort, req.PublicPort, req.Protocol)
-	if err != nil {
-		writeError(w, http.StatusConflict, "public_port is already in use by another tunnel")
-		return
+	baseName := req.Name
+	if baseName == "" {
+		baseName = req.LocalHost
 	}
-	writeJSON(w, http.StatusCreated, toTunnelView(t))
+
+	created := make([]tunnelView, 0, len(localPorts))
+	rollback := func() {
+		for _, c := range created {
+			_ = s.DB.DeleteTunnel(c.ID)
+		}
+	}
+
+	for i, lp := range localPorts {
+		pp := publicPorts[0]
+		if len(publicPorts) > 1 {
+			pp = publicPorts[i]
+		}
+		name := baseName
+		if isRange {
+			name = fmt.Sprintf("%s-%d", baseName, pp)
+		}
+
+		if pp != 0 {
+			if err := s.Tunnels.ProbePublicPort(req.Protocol, pp); err != nil {
+				rollback()
+				writeError(w, http.StatusConflict, fmt.Sprintf("public port %d is already in use on this server (%s) — pick a different port", pp, err))
+				return
+			}
+		}
+
+		t, err := s.DB.CreateTunnel(req.ClientID, name, req.LocalHost, lp, pp, req.Protocol)
+		if err != nil {
+			rollback()
+			writeError(w, http.StatusConflict, "public_port is already in use by another tunnel")
+			return
+		}
+		created = append(created, toTunnelView(t))
+	}
+
+	if isRange {
+		writeJSON(w, http.StatusCreated, created)
+	} else {
+		writeJSON(w, http.StatusCreated, created[0])
+	}
 }
 
 type updateTunnelRequest struct {
